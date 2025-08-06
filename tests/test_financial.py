@@ -1,6 +1,7 @@
 import pytest
 import jax.numpy as jnp
 from scripts.financial import NPV, irr_newton, irr_simulated_batch, compute_no_default_irr, expected_irr_given_price
+from typing import Dict, Tuple
 
 
 def test_npv_basic():
