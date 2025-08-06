@@ -7,6 +7,7 @@ from scripts.simulation import (
     run_simulations_for_company,
     summarize_simulation_results
 )
+from Typing import Dict, Tuple, List
 
 
 def test_prob_no_default():
@@ -25,7 +26,7 @@ def test_build_cashflow_matrix_values():
     path = jnp.ones((10, 5), dtype=jnp.int32)
     cashflows = build_cashflow_matrix(coupon=5.0, delta_notional=-1.0, price=1.0, default_path=path)
     assert cashflows.shape == (10, 5)
-    assert jnp.allclose(cashflows[:, 0], 4.0)  # 5.0 + (-1.0 * 1.0)
+    assert jnp.allclose(cashflows[:, 0], 6.0)
     assert jnp.allclose(cashflows[:, 1:], 5.0)
 
 

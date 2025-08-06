@@ -34,7 +34,7 @@ def test_check_cashflow_consistency_exact_match(capfd):
     })
     check_cashflow_consistency(df)
     captured = capfd.readouterr()
-    assert "Number of mismatches: 0" in captured.out
+    assert "Number of mismatches in cashflow: 0" in captured.out
 
 
 def test_check_cashflow_consistency_mismatch(capfd):
@@ -48,7 +48,7 @@ def test_check_cashflow_consistency_mismatch(capfd):
     })
     check_cashflow_consistency(df)
     captured = capfd.readouterr()
-    assert "Number of mismatches: 1" in captured.out
+    assert "Number of mismatches in cashflow: 1" in captured.out
 
 
 def test_read_and_parse_dates_invalid_format():
