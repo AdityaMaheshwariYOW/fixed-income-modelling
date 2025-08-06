@@ -7,7 +7,7 @@ from scripts.simulation import (
     run_simulations_for_company,
     summarize_simulation_results
 )
-from Typing import Dict, Tuple, List
+from typing import Dict, Tuple, List
 
 
 def test_prob_no_default():
