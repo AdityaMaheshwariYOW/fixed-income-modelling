@@ -77,9 +77,22 @@ def build_cashflow_matrix(
         Cashflow matrix of shape (n_simulations, n_periods).
     """
     n_sim, n_t = default_path.shape
-    cashflows = jnp.ones_like(default_path, dtype=jnp.float32) * coupon
+    # Start with zero cashflows
+    cashflows = jnp.zeros_like(default_path, dtype=jnp.float32)
+
+    # Add coupon payments where alive
+    cashflows += coupon * default_path
+
+    # Subtract price at t=0
     cashflows = cashflows.at[:, 0].add(-delta_notional * price)
-    cashflows = cashflows * default_path
+
+    # Add notional at last alive period
+    last_alive_idx = jnp.argmax(default_path[:, ::-1], axis=1)
+    maturity_indices = n_t - 1 - last_alive_idx  # convert from reverse index
+
+    # Add notional where appropriate
+    cashflows = cashflows.at[jnp.arange(n_sim), maturity_indices].add(delta_notional)
+
     return cashflows
 
 def run_simulations_for_company(
@@ -151,3 +164,34 @@ def summarize_simulation_results(
     total_cf = jnp.sum(jnp.stack(cf_list), axis=0)  # shape (n_sims, n_periods)
     irr_array = irr_simulated_batch(total_cf)
     return float(jnp.mean(irr_array)), float(jnp.std(irr_array))
+
+
+def aggregate_total_cashflows(sim_results: dict) -> jnp.ndarray:
+    """
+    Aggregate total cashflows from simulation results across all companies.
+
+    Parameters
+    ----------
+    sim_results : dict
+        Dictionary containing simulation results per company. Each value must have a 'cf_mat' key
+        representing a (n_simulations x n_periods) cashflow matrix.
+
+    Returns
+    -------
+    jnp.ndarray
+        Array of shape (n_simulations,) representing total cashflow per simulation across all companies.
+    """
+    # Stack and sum across companies
+    cf_matrices = [result["cf_mat"] for result in sim_results.values()]
+    
+    # Ensure all matrices have the same shape
+    shapes = [cf.shape for cf in cf_matrices]
+    if not all(shape == shapes[0] for shape in shapes):
+        raise ValueError("Cashflow matrices have inconsistent shapes.")
+
+    # Shape: (n_simulations, n_periods)
+    portfolio_cf = jnp.sum(jnp.stack(cf_matrices), axis=0)
+
+    # Sum across periods for each simulation
+    total_cf_all = jnp.sum(portfolio_cf, axis=1)
+    return total_cf_all
