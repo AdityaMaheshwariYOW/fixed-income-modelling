@@ -22,16 +22,32 @@ def test_simulate_defaults_returns_correct_shape():
     assert jnp.all(sim_matrix == 1)
 
 def test_build_cashflow_matrix_values():
-    path = jnp.ones((10, 5), dtype=jnp.int32)  # no default in any sim
-    cashflows = build_cashflow_matrix(coupon=5.0, delta_notional=-1.0, price=1.0, default_path=path, default_price_factor=0.7)
-    
+    # Simulate 10 simulations with 5 periods, all survive (no defaults)
+    path = jnp.ones((10, 5), dtype=jnp.int32)
+
+    # Run cashflow matrix builder with known inputs
+    cashflows = build_cashflow_matrix(
+        coupon=5.0,
+        delta_notional=-1.0,
+        price=1.0,
+        alive_mat=path,
+        default_price_factor=0.7  # should not matter here since no default
+    )
+
     assert cashflows.shape == (10, 5)
-    # Initial outlay: -1.0 * 1.0 = -1.0
-    assert jnp.allclose(cashflows[:, 0], -1.0)
-    # Coupons in t=1 to t=3: 5.0 each
-    assert jnp.allclose(cashflows[:, 1:-1], 5.0)
-    # Final coupon + notional repayment: 5.0 + 1.0 = 6.0
-    assert jnp.allclose(cashflows[:, -1], 6.0)
+
+    # Check first column (initial outlay)
+    expected_t0 = -1.0  # -1.0 * 1.0
+    assert jnp.allclose(cashflows[:, 0], expected_t0), f"Initial cashflow incorrect: {cashflows[:, 0]}"
+
+    # Check intermediate coupons (periods 1 to 3)
+    expected_coupon = 5.0
+    assert jnp.allclose(cashflows[:, 1:-1], expected_coupon), f"Coupons incorrect: {cashflows[:, 1:-1]}"
+
+    # Final period: coupon + notional repayment
+    expected_final = 5.0 + 1.0  # coupon + full repayment
+    assert jnp.allclose(cashflows[:, -1], expected_final), f"Final cashflow incorrect: {cashflows[:, -1]}"
+
 
 
 def test_run_simulations_for_company_output():
