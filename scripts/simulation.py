@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import jax
 import jax.numpy as jnp
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 from scripts.financial import irr_simulated_batch
 
 # -------------------------
