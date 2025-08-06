@@ -279,31 +279,36 @@ def compute_irr_from_dataframe(
         return irr_by_group, df if change_price else irr_by_group
 
 # --- Step 2: Define expected IRR from simulations for a given entry price p0 ---
-def expected_irr_given_price(data, p0, n_sims=1000):
-    sim_res = {}
-    for name in data['company'].unique():
-        sub = data[data['company']==name].copy()
-        sub.loc[sub.index[0],'price'] = p0
-        coupon    = sub['coupon'][sub['coupon']>0].iloc[0]
-        delta_not = sub['delta_notional'].iloc[0]
-        sim_res[name] = run_simulations_for_company(
-            company=name, coupon=coupon, delta_notional=delta_not,
-            price=p0, n_periods=len(sub), n_simulations=n_sims, pd=PD
-        )
-        sim_res[name]['delta_notional'] = delta_not
+def expected_irr_given_price(sim_results: dict, p0: float) -> float:
+    """
+    Estimate the expected IRR across all simulations and companies, given an entry price.
 
-    # pad & aggregate
-    max_p = max(v['cf_mat'].shape[1] for v in sim_res.values())
+    Parameters
+    ----------
+    sim_results : dict
+        Dictionary with simulated results, each containing a 'cf_mat' (jax array of shape
+        (n_simulations, n_periods)).
+    p0 : float
+        Price to use for time-zero investment (overwriting initial cashflow at t=0).
+
+    Returns
+    -------
+    float
+        Mean IRR across all simulation paths.
+    """
     cf_list = []
-    for v in sim_res.values():
-        cf = v['cf_mat']
-        dn = v['delta_notional']
-        pad = max_p - cf.shape[1]
-        cf_p = jnp.pad(cf, ((0,0),(0,pad)))
-        cf_p = cf_p.at[:,0].set(dn * p0)   # <-- correct here
-        cf_list.append(cf_p)
+    for v in sim_results.values():
+        cf_mat = v['cf_mat']                     # shape (n_sims, n_periods)
+        cf_adj = cf_mat.at[:, 0].set(-p0)        # overwrite t=0 cashflow
+        cf_list.append(cf_adj)
 
-    portfolio_cf = jnp.sum(jnp.stack(cf_list), axis=0)
-    irrs = irr_simulated_batch(portfolio_cf)
-    irrs = np.array(irrs)
-    return irrs[~np.isnan(irrs)].mean()
+    # Stack across companies → shape (n_companies, n_sims, n_periods)
+    stacked = jnp.stack(cf_list, axis=0)
+    # Sum over companies → shape (n_sims, n_periods)
+    total_cf = jnp.sum(stacked, axis=0)
+
+    # Compute IRR per simulation and average
+    irr_array = irr_simulated_batch(total_cf)
+    irr_array = np.array(irr_array)
+    irr_array = irr_array[~np.isnan(irr_array)]
+    return float(np.mean(irr_array))
