@@ -32,6 +32,47 @@ def NPV(r: float, cf: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
     t_ = jnp.where(jnp.isnan(t), 0, t)
     return jnp.sum(cf_ * jnp.exp(-r * t_))
 
+import pandas as pd
+import jax.numpy as jnp
+
+def compute_grouped_npv(df, group_col, cashflow_col, time_col, rates):
+    """
+    Computes NPV for each group (or for all combined) across different discount rates.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Dataframe containing cashflows.
+    group_col : str
+        Column name to group by (e.g., 'company' or 'combined').
+    cashflow_col : str
+        Column containing cashflow values.
+    time_col : str
+        Column containing time indices (usually integers).
+    rates : list of float
+        Discount rates to test.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of NPVs for each group and rate.
+    """
+    results = []
+    
+    if group_col == 'combined':
+        group_data = [('combined', df)]
+    else:
+        group_data = df.groupby(group_col)
+
+    for rate in rates:
+        for label, group in group_data:
+            times = jnp.array(group[time_col].values)
+            cfs = jnp.array(group[cashflow_col].values)
+            npv = jnp.sum(cfs / (1 + rate) ** times)
+            results.append({'group': label, 'rate': rate, 'npv': float(npv)})
+    
+    return pd.DataFrame(results)
+
 def irr_newton(cf: jnp.ndarray, t: jnp.ndarray, r_init: float = 0.05, max_iter: int = 50) -> jnp.ndarray:
     """
     Compute the internal rate of return (IRR) using the Newton-Raphson method.
@@ -143,3 +184,4 @@ def compute_no_default_irr(cf: jnp.ndarray, times: jnp.ndarray, p0: float) -> fl
     """
     full_cf = cf.at[0].set(-p0)
     return irr_newton(full_cf, times)
+
