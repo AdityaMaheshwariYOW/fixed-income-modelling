@@ -120,7 +120,8 @@ def expected_irr_given_price(sim_results: dict, p0: float) -> float:
         cf_list.append(cf_adj.T)  # reshape to (n_sims, n_periods)
 
     all_cf = jnp.sum(jnp.stack(cf_list), axis=0)  # sum over companies
-    return jnp.mean(irr_simulated_batch(all_cf))
+    return float(jnp.mean(irr_simulated_batch(all_cf)))
+
 
 def compute_no_default_irr(cf: jnp.ndarray, times: jnp.ndarray, p0: float) -> float:
     """
