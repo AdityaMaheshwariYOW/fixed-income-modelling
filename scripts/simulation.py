@@ -78,7 +78,7 @@ def build_cashflow_matrix(
     """
     n_sim, n_t = default_path.shape
     cashflows = jnp.ones_like(default_path, dtype=jnp.float32) * coupon
-    cashflows = cashflows.at[:, 0].add(delta_notional * price)
+    cashflows = cashflows.at[:, 0].add(-delta_notional * price)
     cashflows = cashflows * default_path
     return cashflows
 

@@ -86,7 +86,7 @@ def check_cashflow_consistency(df: pd.DataFrame,
     df['cf_match'] = np.isclose(df['calculated_cf'], df[cf_col], atol=tol)
 
     mismatches = df[~df['cf_match']]
-    print(f"Number of mismatches: {len(mismatches)}")
+    print(f"Number of mismatches in cashflow: {len(mismatches)}")
 
     if not mismatches.empty:
         print(mismatches[['company', 'date', coupon_col, delta_col, price_col, cf_col, 'calculated_cf']])
