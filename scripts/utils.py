@@ -1,28 +1,29 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import jax
-import jax.numpy as jnp
-from jax import lax
-from typing import Dict
+from typing import List
 
-
-# Read Data
 
 def read_and_parse_dates(path: str, date_col: str = 'date') -> pd.DataFrame:
     """
-    Reads a CSV or Excel file and converts the date column to datetime.
+    Reads a CSV or Excel file and parses a specified column as datetime.
 
     Parameters
     ----------
     path : str
-        Path to the file (CSV or Excel)
+        Path to the file (supports .csv, .xls, .xlsx)
     date_col : str
-        Column name to parse as datetime
+        Column to parse as datetime
 
     Returns
     -------
     pd.DataFrame
+        Parsed dataframe with datetime column
+
+    Raises
+    ------
+    ValueError
+        If file extension is not supported
     """
     if path.endswith('.csv'):
         df = pd.read_csv(path)
@@ -34,23 +35,28 @@ def read_and_parse_dates(path: str, date_col: str = 'date') -> pd.DataFrame:
     df[date_col] = pd.to_datetime(df[date_col])
     return df
 
+
 def add_time_column(df: pd.DataFrame, date_col: str = 'date') -> pd.DataFrame:
     """
-    Adds a 'time' column calculated as (date - min_date) / 365.
+    Adds a 'time' column to a dataframe, where time is measured
+    in years from the earliest date in `date_col`.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Data containing a datetime column
+        DataFrame with a datetime column
+    date_col : str
+        Column name containing datetime objects
 
     Returns
     -------
     pd.DataFrame
-        Updated dataframe with 'time' column
+        DataFrame with an added 'time' column (float, years)
     """
     min_date = df[date_col].min()
     df['time'] = (df[date_col] - min_date).dt.days / 365
     return df
+
 
 def check_cashflow_consistency(df: pd.DataFrame,
                                 cf_col: str = 'total_cf',
@@ -85,28 +91,33 @@ def check_cashflow_consistency(df: pd.DataFrame,
     if not mismatches.empty:
         display(mismatches[['company', 'date', coupon_col, delta_col, price_col, cf_col, 'calculated_cf']])
 
-# Plotting Functions
-def plot_grouped_time_series(df, group_col, time_col, value_cols, 
-                             title_prefix="Group", ylabel="Value", figsize_per_group=4):
+
+def plot_grouped_time_series(df: pd.DataFrame, group_col: str, time_col: str,
+                             value_cols: List[str], title_prefix: str = "Group",
+                             ylabel: str = "Value", figsize_per_group: float = 4.0) -> None:
     """
-    Plot time series data for each group in a separate subplot.
+    Plots time series for each group in a separate subplot.
 
     Parameters
     ----------
     df : pd.DataFrame
-        The input dataframe.
+        DataFrame with grouped time series data
     group_col : str
-        Column to group by (e.g. 'company').
+        Column to group by
     time_col : str
-        Column representing the time axis (e.g. 'time').
+        Column for x-axis (time)
     value_cols : list of str
-        Columns to plot as separate lines (e.g. ['total_cf', 'coupon', 'delta_notional']).
+        Columns to plot on y-axis
     title_prefix : str
-        Prefix for subplot titles (e.g. 'Company' will show 'Company A', 'Company B', etc.)
+        Prefix for subplot titles
     ylabel : str
-        Label for the y-axis.
+        Label for y-axis
     figsize_per_group : float
-        Vertical size per group in inches.
+        Vertical size per subplot
+
+    Returns
+    -------
+    None
     """
     groups = df[group_col].unique()
     fig, axes = plt.subplots(len(groups), 1, figsize=(10, figsize_per_group * len(groups)), sharex=True)
@@ -129,4 +140,3 @@ def plot_grouped_time_series(df, group_col, time_col, value_cols,
 
     plt.tight_layout()
     plt.show()
-
