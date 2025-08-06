@@ -1,116 +1,153 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import jax
 import jax.numpy as jnp
-from jax import vmap
-from scipy.optimize import brentq
+from typing import Dict, Tuple
+from scripts.financial import irr_simulated_batch
+
+# -------------------------
+# Default & Simulation Utilities
+# -------------------------
 
 def prob_no_default(pd: float, n: int) -> float:
     """
-    Probability of surviving n independent periods with default probability pd each.
+    Compute the probability that a company does NOT default over n periods,
+    assuming independent default probability per period.
+
+    Parameters
+    ----------
+    pd : float
+        Per-period default probability.
+    n : int
+        Number of time periods.
+
+    Returns
+    -------
+    float
+        Probability of survival across all periods.
     """
     return (1 - pd) ** n
 
-def simulate_defaults(df, pd_default, recovery_price=0.7, n_sims=10_000, seed=0):
+def simulate_defaults(n_periods: int, n_simulations: int, pd: float) -> jnp.ndarray:
     """
-    Simulate default-adjusted cashflows. Supports:
-      - Scalar recovery_price
-      - Array of recovery_price over time
-      - Function recovery_price(t)
+    Generate binary default paths for multiple simulations.
+
+    Parameters
+    ----------
+    n_periods : int
+        Number of time steps per simulation.
+    n_simulations : int
+        Number of independent simulations.
+    pd : float
+        Probability of default at each time step.
+
+    Returns
+    -------
+    jnp.ndarray
+        (n_simulations x n_periods) matrix with 1 if alive, 0 if defaulted.
     """
-    rng = np.random.default_rng(seed)
-    results = {}
+    rand_matrix = jax.random.uniform(jax.random.PRNGKey(0), (n_simulations, n_periods))
+    default_matrix = (rand_matrix > pd).astype(jnp.int32)
+    default_path = jnp.cumprod(default_matrix, axis=1)  # once defaulted, always defaulted
+    return default_path
 
-    for comp, sub in df.groupby('company'):
-        sub = sub.sort_values('time')
-        c = sub['coupon'].to_numpy()
-        d = sub['delta_notional'].to_numpy()
-        p = sub['price'].to_numpy()
-        times = sub['time'].to_numpy()
-        n = len(times)
-
-        base_cf = c[:, None] + d[:, None] * p[:, None]
-        cf_mat = np.tile(base_cf, (1, n_sims))
-
-        uni_later = rng.random((n - 1, n_sims))
-        default_mask = np.vstack([
-            np.zeros((1, n_sims), dtype=bool),       # time 0 → never default
-            uni_later < pd_default                   # time 1+
-        ])
-
-        any_default = default_mask.any(axis=0)
-        first_def = np.where(any_default, default_mask.argmax(axis=0), -1)
-
-        # Handle recovery price resolution
-        if callable(recovery_price):
-            recovery_at = lambda i: recovery_price(times[i])
-        elif hasattr(recovery_price, '__len__'):
-            recovery_vec = np.array(recovery_price)
-            recovery_at = lambda i: recovery_vec[i]
-        else:
-            recovery_at = lambda i: recovery_price  # scalar
-
-        # Apply default logic per simulation
-        for i in range(n_sims):
-            fd = first_def[i]
-            if fd == -1:
-                continue
-            cf_mat[fd, i] = c[fd] + d[fd] * recovery_at(fd)
-            cf_mat[(fd+1):, i] = 0.0
-
-        results[comp] = {
-            'times': times,
-            'cf_mat': cf_mat,
-            'total_cf': cf_mat.sum(axis=0),
-            'prop_no_default': np.mean(first_def == -1),
-            'n_periods': n
-        }
-
-    return results
-
-
-def aggregate_total_cashflows(sim_results):
+def build_cashflow_matrix(
+    coupon: float,
+    delta_notional: float,
+    price: float,
+    default_path: jnp.ndarray
+) -> jnp.ndarray:
     """
-    Combine all simulated cashflows into total portfolio cashflows.
+    Construct a matrix of cashflows under simulated default paths.
+
+    Parameters
+    ----------
+    coupon : float
+        Periodic coupon payment.
+    delta_notional : float
+        Change in notional exposure at entry.
+    price : float
+        Entry price of the bond.
+    default_path : jnp.ndarray
+        Matrix indicating survival status (1=alive, 0=defaulted) for each period.
+
+    Returns
+    -------
+    jnp.ndarray
+        Cashflow matrix of shape (n_simulations, n_periods).
     """
-    total_cf_all = np.sum([v['total_cf'] for v in sim_results.values()], axis=0)
-    return total_cf_all
+    n_sim, n_t = default_path.shape
+    cashflows = jnp.ones_like(default_path, dtype=jnp.float32) * coupon
+    cashflows = cashflows.at[:, 0].add(delta_notional * price)
+    cashflows = cashflows * default_path
+    return cashflows
 
-def simulate_irrs(sim_results):
-    cf_stack = np.vstack([v['cf_mat'] for v in sim_results.values()])
-    time_stack = np.concatenate([v['times'] for v in sim_results.values()])
-    cf_stack_jax = jnp.array(cf_stack.T)
-    time_stack_jax = jnp.array(time_stack)
-
-    @vmap
-    def compute_irr_safe(cf_row):
-        is_zero = jnp.all(cf_row == 0.0)
-        return lax.cond(
-            is_zero,
-            lambda _: jnp.nan,
-            lambda _: IRR(cf_row, time_stack_jax),
-            operand=None
-        )
-
-    irrs = np.array(compute_irr_safe(cf_stack_jax))
-    return irrs[~np.isnan(irrs)]
-
-def solve_fair_price(df, PD, recovery_price, target_IRR, lower=0.5, upper=1.5):
+def run_simulations_for_company(
+    company: str,
+    coupon: float,
+    delta_notional: float,
+    price: float,
+    n_periods: int,
+    n_simulations: int,
+    pd: float
+) -> Dict:
     """
-    Solve for entrance price P0 such that expected IRR under default simulations equals IRR under no default.
+    Run a default-adjusted cashflow simulation for one company.
+
+    Parameters
+    ----------
+    company : str
+        Company name identifier.
+    coupon : float
+        Periodic cash coupon.
+    delta_notional : float
+        Change in notional at initial time.
+    price : float
+        Entry bond price.
+    n_periods : int
+        Number of cashflow periods.
+    n_simulations : int
+        Number of Monte Carlo simulations.
+    pd : float
+        Per-period default probability.
+
+    Returns
+    -------
+    dict
+        Dictionary with simulated paths and cashflows.
     """
-    def set_price_and_simulate(p0):
-        df_mod = df.copy()
-        t0 = df_mod['time'].min()
-        df_mod.loc[df_mod['time'] == t0, 'price'] = p0
-        df_mod['total_cf'] = df_mod['coupon'] + df_mod['delta_notional'] * df_mod['price']
+    path = simulate_defaults(n_periods, n_simulations, pd)
+    cf_mat = build_cashflow_matrix(coupon, delta_notional, price, path)
+    return {
+        "company": company,
+        "cf_mat": cf_mat,
+        "alive_mat": path
+    }
 
-        sim_results = simulate_defaults(df_mod, PD, recovery_price)
-        irrs = simulate_irrs(sim_results)
-        return irrs.mean()
+def summarize_simulation_results(
+    sim_results: Dict[str, Dict],
+    price_at_t0: float
+) -> Tuple[float, float]:
+    """
+    Compute summary statistics (mean and std) of IRRs across simulation paths.
 
-    def objective(p0):
-        return set_price_and_simulate(p0) - target_IRR
+    Parameters
+    ----------
+    sim_results : dict
+        Dictionary of results from multiple company simulations.
+    price_at_t0 : float
+        Time-zero investment amount applied to all simulations.
 
-    return brentq(objective, lower, upper)
+    Returns
+    -------
+    tuple of float
+        Mean and standard deviation of simulated IRRs.
+    """
+    cf_list = []
+    for result in sim_results.values():
+        cf = result["cf_mat"].at[:, 0].set(-price_at_t0)
+        cf_list.append(cf)
 
+    total_cf = jnp.sum(jnp.stack(cf_list), axis=0)  # shape (n_sims, n_periods)
+    irr_array = irr_simulated_batch(total_cf)
+    return float(jnp.mean(irr_array)), float(jnp.std(irr_array))
