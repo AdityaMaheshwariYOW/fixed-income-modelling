@@ -4,68 +4,54 @@ import matplotlib.pyplot as plt
 import jax
 import jax.numpy as jnp
 from jax import lax
-from typing import Dict
+from typing import Union, List
 
-# NPV Function
-def NPV(r, cf, t):
-  """Calculate net present value of cashflows.
-  Parameters
-  ----------
-  r : float
-  Discount rate
-  cf : float, jax.Array / np.array
-  Cashflow amounts
-  t : float, jax.Array / np.array
-  Time points for cashflows (in years: days / 365)
-  Notes
-  -----
-  cf and t should be compatible (broadcastable) shapes
-  Returns
-  -------
-  jax.Array
-  Net present value
-  """
-  # replacing nans with 0 - to avoid nans propagating if using jax.grad
-  cf_ = jnp.where(jnp.isnan(cf), 0, cf)
-  t_ = jnp.where(jnp.isnan(t), 0, t)
-  # return jnp.nansum(cf * jnp.exp(-r * t))
-  return jnp.sum(cf_ * jnp.exp(-r * t_))
+# -------------------------
+# Core Financial Functions
+# -------------------------
 
-# IRR Function
-
-def IRR(cf: jnp.ndarray, t: jnp.ndarray, r_init: float = 0.05, max_iter: int = 50, tol: float = 1e-8) -> jnp.ndarray:
+def NPV(r: float, cf: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
     """
-    Estimate internal rate of return (IRR) using Newton–Raphson method via jax.lax.scan.
-    
+    Compute the Net Present Value (NPV) of a stream of cashflows.
+
     Parameters
     ----------
-    cf : jax.Array or np.ndarray
-        Cashflow amounts (should match time array in shape)
-    t : jax.Array or np.ndarray
-        Time points corresponding to each cashflow (in years, e.g., days / 365)
-    r_init : float, optional
-        Initial guess for the IRR (default is 0.05)
-    max_iter : int, optional
-        Maximum number of iterations for Newton–Raphson convergence (default is 50)
-    tol : float, optional
-        Tolerance for convergence (not currently used explicitly, left for future extensions)
-    
+    r : float
+        Discount rate (continuously compounded).
+    cf : jnp.ndarray
+        Array of cashflows.
+    t : jnp.ndarray
+        Array of time points corresponding to the cashflows (in years).
+
     Returns
     -------
-    jax.Array
-        Estimated continuous compounding internal rate of return (IRR)
-    
-    Notes
-    -----
-    - Uses JAX autodiff (`jax.grad`) and `lax.scan` for efficient iteration.
-    - IRR is defined as the discount rate `r` such that NPV(r, cf, t) ≈ 0.
-    - Assumes that a valid root exists and that the Newton method will converge.
-    - Assumes all inputs are JAX-compatible arrays (e.g., `jnp.array`).
+    jnp.ndarray
+        The computed NPV value.
     """
-    # Ensure inputs are arrays
-    cf = jnp.asarray(cf)
-    t = jnp.asarray(t)
+    cf_ = jnp.where(jnp.isnan(cf), 0, cf)
+    t_ = jnp.where(jnp.isnan(t), 0, t)
+    return jnp.sum(cf_ * jnp.exp(-r * t_))
 
+def irr_newton(cf: jnp.ndarray, t: jnp.ndarray, r_init: float = 0.05, max_iter: int = 50) -> jnp.ndarray:
+    """
+    Compute the internal rate of return (IRR) using the Newton-Raphson method.
+
+    Parameters
+    ----------
+    cf : jnp.ndarray
+        Cashflow amounts.
+    t : jnp.ndarray
+        Time points corresponding to each cashflow (in years).
+    r_init : float, optional
+        Initial guess for the IRR (default is 0.05).
+    max_iter : int, optional
+        Maximum number of iterations (default is 50).
+
+    Returns
+    -------
+    jnp.ndarray
+        Estimated IRR using continuous compounding.
+    """
     def body_fn(r, _):
         f = NPV(r, cf, t)
         df = jax.grad(NPV)(r, cf, t)
@@ -75,189 +61,84 @@ def IRR(cf: jnp.ndarray, t: jnp.ndarray, r_init: float = 0.05, max_iter: int = 5
     r_final, _ = lax.scan(body_fn, r_init, None, length=max_iter)
     return r_final
 
-def compute_grouped_npv(df, group_col, cashflow_col, time_col, rates):
+def irr_simulated_batch(cashflow_matrix: jnp.ndarray) -> jnp.ndarray:
     """
-    Compute NPVs at different discount rates grouped by a specified column, or across all data.
+    Compute IRRs for a batch of simulated cashflow paths using vectorized bisection.
 
     Parameters
     ----------
-    df : pd.DataFrame
-        The input data.
-    group_col : str
-        Column to group by (e.g., 'company'), or "combined" to treat all rows together.
-    cashflow_col : str
-        The name of the column containing cashflows.
-    time_col : str
-        The name of the column containing time (in years).
-    rates : list of float
-        Discount rates to evaluate (e.g., [0.00, 0.05, 0.10]).
+    cashflow_matrix : jnp.ndarray
+        Matrix of shape (n_simulations, n_periods) where each row is a set of cashflows.
 
     Returns
     -------
-    pd.DataFrame
-        A pivoted DataFrame with NPVs per group and rate.
+    jnp.ndarray
+        Array of IRRs, one per simulation.
     """
-    results = []
+    def npv(rate, cf):
+        times = jnp.arange(cf.shape[0])
+        return jnp.sum(cf / (1 + rate) ** times)
 
-    if group_col == "combined":
-        cf = jnp.array(df[cashflow_col].values)
-        t = jnp.array(df[time_col].values)
+    def single_irr(cf):
+        def cond(state):
+            low, high, i = state
+            return (i < 100) & (high - low > 1e-6)
 
-        for r in rates:
-            npv_val = NPV(r, cf, t)
-            results.append({
-                'group': 'All',
-                'rate': r,
-                'npv': float(npv_val)
-            })
+        def body(state):
+            low, high, i = state
+            mid = (low + high) / 2
+            mid_npv = npv(mid, cf)
+            return jax.lax.cond(mid_npv > 0,
+                                 lambda _: (mid, high, i + 1),
+                                 lambda _: (low, mid, i + 1),
+                                 operand=None)
 
-        npv_df = pd.DataFrame(results)
-        return npv_df.pivot(index='group', columns='rate', values='npv').rename_axis(columns='rate (%)')
+        low_final, high_final, _ = lax.while_loop(cond, body, (-0.9999, 1.0, 0))
+        return (low_final + high_final) / 2
 
-    else:
-        for group in df[group_col].unique():
-            subset = df[df[group_col] == group]
-            cf = jnp.array(subset[cashflow_col].values)
-            t = jnp.array(subset[time_col].values)
+    return jax.vmap(single_irr)(cashflow_matrix)
 
-            for r in rates:
-                npv_val = NPV(r, cf, t)
-                results.append({
-                    group_col: group,
-                    'rate': r,
-                    'npv': float(npv_val)
-                })
-
-        npv_df = pd.DataFrame(results)
-        return npv_df.pivot(index=group_col, columns='rate', values='npv').rename_axis(columns='rate (%)')
-
-def evaluate_npv_and_gradients(cf_array, t_array, rates):
+def expected_irr_given_price(sim_results: dict, p0: float) -> float:
     """
-    Compute NPV and its gradient with respect to r for given rates.
+    Estimate the expected IRR across all simulations and companies, given an entry price.
 
     Parameters
     ----------
-    cf_array : array-like
-        Array of cashflows.
-    t_array : array-like
-        Array of time points (in years).
-    rates : list of float
-        Discount rates at which to evaluate.
+    sim_results : dict
+        Dictionary with simulated results, each containing a 'cf_mat' (cashflow matrix).
+    p0 : float
+        Price to use for time-zero investment (overwriting initial cash outlay).
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame with NPV and gradient of NPV w.r.t. r at each rate.
+    float
+        Mean IRR across all simulation paths.
     """
-    grad_NPV = jax.grad(NPV)
-    results = []
+    cf_list = []
+    for v in sim_results.values():
+        cf_adj = v['cf_mat'].at[0].set(-p0)  # set time-zero outlay
+        cf_list.append(cf_adj.T)  # reshape to (n_sims, n_periods)
 
-    for r in rates:
-        npv_val = NPV(r, cf_array, t_array)
-        grad_val = grad_NPV(r, cf_array, t_array)
-        results.append({
-            'rate': r,
-            'npv': float(npv_val),
-            'dNPV/dr': float(grad_val)
-        })
+    all_cf = jnp.sum(jnp.stack(cf_list), axis=0)  # sum over companies
+    return jnp.mean(irr_simulated_batch(all_cf))
 
-    df = pd.DataFrame(results).set_index('rate')
-    df.index.name = 'rate (%)'
-    return df
-
-def evaluate_irr(
-    data,
-    cf_col='total_cf',
-    t_col='time',
-    group_col='company',
-    combine=False,
-    change_price=False,
-    new_price=1.00,
-    date_col='date',
-    coupon_col='coupon',
-    delta_notional_col='delta_notional',
-    price_col='price'
-):
+def compute_no_default_irr(cf: jnp.ndarray, times: jnp.ndarray, p0: float) -> float:
     """
-    Compute IRR (continuous and simple) from cashflows, optionally modifying entrance price at t=0.
+    Compute IRR under the assumption of no default (i.e., using total deterministic cashflows).
 
     Parameters
     ----------
-    data : pd.DataFrame
-        Input dataframe.
-    cf_col : str
-        Name of the column with cashflows (e.g., 'total_cf').
-    t_col : str
-        Name of the column with time values (in years).
-    group_col : str
-        Column to group by (e.g., 'company').
-    combine : bool
-        If True, computes IRR over all cashflows combined (ignores grouping).
-    change_price : bool
-        If True, modifies the entrance price at t=0 before computing IRRs.
-    new_price : float
-        New price to set at t=0 if change_price is True.
-    date_col : str
-        Column indicating dates (used for detecting t=0).
-    coupon_col : str
-        Coupon column used to reconstruct cashflows.
-    delta_notional_col : str
-        Delta notional column used to reconstruct cashflows.
-    price_col : str
-        Price column to override at t=0.
+    cf : jnp.ndarray
+        Cashflows (e.g., company-level or summed across companies).
+    times : jnp.ndarray
+        Time points for each cashflow.
+    p0 : float
+        Price at time 0 (initial investment).
 
     Returns
     -------
-    pd.DataFrame
-        IRR results (per group or combined).
-    pd.DataFrame (optional)
-        Modified DataFrame (only returned if `change_price=True`)
+    float
+        Estimated IRR (continuous compounding).
     """
-
-    df_mod = data.copy()
-
-    # Optionally override price at t=0 and recompute cashflows
-    if change_price:
-        min_date = df_mod[date_col].min()
-        mask_t0 = df_mod[date_col] == min_date
-
-        df_mod.loc[mask_t0, price_col] = new_price
-        df_mod.loc[mask_t0, cf_col] = (
-            df_mod.loc[mask_t0, coupon_col] +
-            df_mod.loc[mask_t0, delta_notional_col] * df_mod.loc[mask_t0, price_col]
-        )
-    else:
-        df_mod = df_mod.copy()
-
-    # Compute IRRs
-    if combine:
-        cf = jnp.array(df_mod[cf_col].values)
-        t = jnp.array(df_mod[t_col].values)
-
-        r_cont = IRR(cf, t)
-        r_simple = jnp.exp(r_cont) - 1
-
-        result_df = pd.DataFrame([{
-            'group': 'Combined',
-            'IRR (continuous)': float(r_cont),
-            'IRR (simple)': float(r_simple)
-        }]).set_index('group')
-    else:
-        irr_results = []
-        for group, df_grp in df_mod.groupby(group_col):
-            cf = jnp.array(df_grp[cf_col].values)
-            t = jnp.array(df_grp[t_col].values)
-
-            r_cont = IRR(cf, t)
-            r_simple = jnp.exp(r_cont) - 1
-
-            irr_results.append({
-                group_col: group,
-                'IRR (continuous)': float(r_cont),
-                'IRR (simple)': float(r_simple)
-            })
-
-        result_df = pd.DataFrame(irr_results).set_index(group_col)
-
-    return (result_df, df_mod) if change_price else result_df
-
+    full_cf = cf.at[0].set(-p0)
+    return irr_newton(full_cf, times)

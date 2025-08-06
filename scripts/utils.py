@@ -89,7 +89,7 @@ def check_cashflow_consistency(df: pd.DataFrame,
     print(f"Number of mismatches: {len(mismatches)}")
 
     if not mismatches.empty:
-        display(mismatches[['company', 'date', coupon_col, delta_col, price_col, cf_col, 'calculated_cf']])
+        print(mismatches[['company', 'date', coupon_col, delta_col, price_col, cf_col, 'calculated_cf']])
 
 
 def plot_grouped_time_series(df: pd.DataFrame, group_col: str, time_col: str,
