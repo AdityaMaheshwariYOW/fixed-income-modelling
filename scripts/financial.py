@@ -32,8 +32,6 @@ def NPV(r: float, cf: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
     t_ = jnp.where(jnp.isnan(t), 0, t)
     return jnp.sum(cf_ * jnp.exp(-r * t_))
 
-import pandas as pd
-import jax.numpy as jnp
 
 def compute_grouped_npv(df, group_col, cashflow_col, time_col, rates):
     """
@@ -280,7 +278,7 @@ def compute_irr_from_dataframe(
             irr_by_group[name] = irr_newton(cf, t)
         return irr_by_group, df if change_price else irr_by_group
 
-def expected_irr_given_price_empirical(p0: float) -> float:
+def expected_irr_given_price_empirical(data: pd.DataFrame, p0: float, N_SIMULATIONS: int = 10000) -> float:
     """
     Simulate portfolio cashflows given an entry price p0, and compute the expected IRR.
 
