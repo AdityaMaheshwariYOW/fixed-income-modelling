@@ -3,7 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import jax
 import jax.numpy as jnp
-from jax import lax
+from jax import lax, grad
 from typing import Union, Tuple, List
 
 # -------------------------
