@@ -278,59 +278,32 @@ def compute_irr_from_dataframe(
             irr_by_group[name] = irr_newton(cf, t)
         return irr_by_group, df if change_price else irr_by_group
 
-def expected_irr_given_price_empirical(data: pd.DataFrame, p0: float, N_SIMULATIONS: int = 10000) -> float:
-    """
-    Simulate portfolio cashflows given an entry price p0, and compute the expected IRR.
-
-    Parameters
-    ----------
-    p0 : float
-        Entry price to set at time 0 for all companies.
-
-    Returns
-    -------
-    float
-        Average IRR across all simulation paths.
-    """
+# --- Step 2: Define expected IRR from simulations for a given entry price p0 ---
+def expected_irr_given_price(data, p0, n_sims=1000):
     sim_res = {}
-
-    for company in data['company'].unique():
-        df_sub = data[data['company'] == company].copy()
-        n_periods = df_sub.shape[0]
-        t0 = df_sub['date'].min()
-        times = (df_sub['date'] - t0).dt.days.values / 365.0
-
-        # Overwrite price at time 0
-        df_sub.loc[df_sub.index[0], 'price'] = p0
-        coupon = df_sub['coupon'][df_sub['coupon'] > 0].iloc[0]
-        delta_notional = df_sub['delta_notional'].iloc[0]
-
-        sim_res[company] = run_simulations_for_company(
-            company=company,
-            coupon=coupon,
-            delta_notional=delta_notional,
-            price=p0,
-            n_periods=n_periods,
-            n_simulations=N_SIMULATIONS,
-            pd=PD
+    for name in data['company'].unique():
+        sub = data[data['company']==name].copy()
+        sub.loc[sub.index[0],'price'] = p0
+        coupon    = sub['coupon'][sub['coupon']>0].iloc[0]
+        delta_not = sub['delta_notional'].iloc[0]
+        sim_res[name] = run_simulations_for_company(
+            company=name, coupon=coupon, delta_notional=delta_not,
+            price=p0, n_periods=len(sub), n_simulations=n_sims, pd=PD
         )
-        sim_res[company]['times'] = jnp.array(times)
+        sim_res[name]['delta_notional'] = delta_not
 
-    # Pad and aggregate cashflows across companies
-    max_periods = max(v['cf_mat'].shape[1] for v in sim_res.values())
+    # pad & aggregate
+    max_p = max(v['cf_mat'].shape[1] for v in sim_res.values())
     cf_list = []
     for v in sim_res.values():
-        cf = v["cf_mat"]
-        pad_width = max_periods - cf.shape[1]
-        cf_padded = jnp.pad(cf, ((0, 0), (0, pad_width)))
-        cf_padded = cf_padded.at[:, 0].set(-p0)
-        cf_list.append(cf_padded)
+        cf = v['cf_mat']
+        dn = v['delta_notional']
+        pad = max_p - cf.shape[1]
+        cf_p = jnp.pad(cf, ((0,0),(0,pad)))
+        cf_p = cf_p.at[:,0].set(dn * p0)   # <-- correct here
+        cf_list.append(cf_p)
 
-    total_cf = jnp.sum(jnp.stack(cf_list), axis=0)  # shape: (n_sims, max_periods)
-
-    # Compute IRR per simulation
-    irr_array = irr_simulated_batch(total_cf)
-    irr_array = np.array(irr_array)
-    irr_array = irr_array[~np.isnan(irr_array)]
-
-    return irr_array.mean()
+    portfolio_cf = jnp.sum(jnp.stack(cf_list), axis=0)
+    irrs = irr_simulated_batch(portfolio_cf)
+    irrs = np.array(irrs)
+    return irrs[~np.isnan(irrs)].mean()
