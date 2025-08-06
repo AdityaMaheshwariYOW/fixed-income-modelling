@@ -279,3 +279,60 @@ def compute_irr_from_dataframe(
             t = jnp.array(subdf['time'].values)
             irr_by_group[name] = irr_newton(cf, t)
         return irr_by_group, df if change_price else irr_by_group
+
+def expected_irr_given_price_empirical(p0: float) -> float:
+    """
+    Simulate portfolio cashflows given an entry price p0, and compute the expected IRR.
+
+    Parameters
+    ----------
+    p0 : float
+        Entry price to set at time 0 for all companies.
+
+    Returns
+    -------
+    float
+        Average IRR across all simulation paths.
+    """
+    sim_res = {}
+
+    for company in data['company'].unique():
+        df_sub = data[data['company'] == company].copy()
+        n_periods = df_sub.shape[0]
+        t0 = df_sub['date'].min()
+        times = (df_sub['date'] - t0).dt.days.values / 365.0
+
+        # Overwrite price at time 0
+        df_sub.loc[df_sub.index[0], 'price'] = p0
+        coupon = df_sub['coupon'][df_sub['coupon'] > 0].iloc[0]
+        delta_notional = df_sub['delta_notional'].iloc[0]
+
+        sim_res[company] = run_simulations_for_company(
+            company=company,
+            coupon=coupon,
+            delta_notional=delta_notional,
+            price=p0,
+            n_periods=n_periods,
+            n_simulations=N_SIMULATIONS,
+            pd=PD
+        )
+        sim_res[company]['times'] = jnp.array(times)
+
+    # Pad and aggregate cashflows across companies
+    max_periods = max(v['cf_mat'].shape[1] for v in sim_res.values())
+    cf_list = []
+    for v in sim_res.values():
+        cf = v["cf_mat"]
+        pad_width = max_periods - cf.shape[1]
+        cf_padded = jnp.pad(cf, ((0, 0), (0, pad_width)))
+        cf_padded = cf_padded.at[:, 0].set(-p0)
+        cf_list.append(cf_padded)
+
+    total_cf = jnp.sum(jnp.stack(cf_list), axis=0)  # shape: (n_sims, max_periods)
+
+    # Compute IRR per simulation
+    irr_array = irr_simulated_batch(total_cf)
+    irr_array = np.array(irr_array)
+    irr_array = irr_array[~np.isnan(irr_array)]
+
+    return irr_array.mean()
