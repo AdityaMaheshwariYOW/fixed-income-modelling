@@ -51,49 +51,54 @@ def simulate_defaults(n_periods: int, n_simulations: int, pd: float) -> jnp.ndar
     default_path = jnp.cumprod(default_matrix, axis=1)  # once defaulted, always defaulted
     return default_path
 
-def build_cashflow_matrix(
-    coupon: float,
-    delta_notional: float,
-    price: float,
-    default_path: jnp.ndarray
-) -> jnp.ndarray:
+
+def build_cashflow_matrix(coupon, delta_notional, price, alive_mat, default_price_factor=0.7):
     """
-    Construct a matrix of cashflows under simulated default paths.
+    Build cashflow matrix per simulation with proper sign.
 
     Parameters
     ----------
     coupon : float
-        Periodic coupon payment.
+        Periodic coupon.
     delta_notional : float
-        Change in notional exposure at entry.
+        Notional change at t=0 (should be negative).
     price : float
-        Entry price of the bond.
-    default_path : jnp.ndarray
-        Matrix indicating survival status (1=alive, 0=defaulted) for each period.
+        Entry price (per unit of notional).
+    alive_mat : jnp.array
+        Simulation default paths (n_simulations x n_periods)
 
     Returns
     -------
-    jnp.ndarray
-        Cashflow matrix of shape (n_simulations, n_periods).
+    jnp.array
+        Cashflow matrix (n_simulations x n_periods)
     """
-    n_sim, n_t = default_path.shape
-    # Start with zero cashflows
-    cashflows = jnp.zeros_like(default_path, dtype=jnp.float32)
+    n_simulations, n_periods = alive_mat.shape
 
-    # Add coupon payments where alive
-    cashflows += coupon * default_path
+    # Initialize cashflows
+    cf_mat = jnp.zeros((n_simulations, n_periods))
 
-    # Subtract price at t=0
-    cashflows = cashflows.at[:, 0].add(-delta_notional * price)
+    # Time 0: initial investment (outlay)
+    cf_mat = cf_mat.at[:, 0].set(delta_notional * price)  # Should be negative
 
-    # Add notional at last alive period
-    last_alive_idx = jnp.argmax(default_path[:, ::-1], axis=1)
-    maturity_indices = n_t - 1 - last_alive_idx  # convert from reverse index
+    # Coupons: only if alive
+    for t in range(1, n_periods):
+        cf_mat = cf_mat.at[:, t].add(coupon * alive_mat[:, t])
 
-    # Add notional where appropriate
-    cashflows = cashflows.at[jnp.arange(n_sim), maturity_indices].add(delta_notional)
+    # Final period: add notional repayment if survived to last
+    # Check where default happens — repay notional only at default
+    default_occurred = (alive_mat[:, 1:] - alive_mat[:, :-1]) == -1
+    first_default_idx = jnp.argmax(default_occurred, axis=1) + 1
+    default_happens = jnp.any(default_occurred, axis=1)
 
-    return cashflows
+    # Repay at default (lower price), else at end (full price)
+    default_prices = price * default_price_factor  # e.g., 70% recovery on default
+    for i in range(n_simulations):
+        if default_happens[i]:
+            cf_mat = cf_mat.at[i, first_default_idx[i]].add(-delta_notional * default_prices)
+        else:
+            cf_mat = cf_mat.at[i, -1].add(-delta_notional * price)  # final repayment
+
+    return cf_mat
 
 def run_simulations_for_company(
     company: str,

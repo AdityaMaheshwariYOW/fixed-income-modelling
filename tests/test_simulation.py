@@ -22,12 +22,16 @@ def test_simulate_defaults_returns_correct_shape():
     assert jnp.all(sim_matrix == 1)
 
 def test_build_cashflow_matrix_values():
-    path = jnp.ones((10, 5), dtype=jnp.int32)
-    cashflows = build_cashflow_matrix(coupon=5.0, delta_notional=-1.0, price=1.0, default_path=path)
+    path = jnp.ones((10, 5), dtype=jnp.int32)  # no default in any sim
+    cashflows = build_cashflow_matrix(coupon=5.0, delta_notional=-1.0, price=1.0, default_path=path, default_price_factor=0.7)
+    
     assert cashflows.shape == (10, 5)
-    assert jnp.allclose(cashflows[:, 0], 6.0)  # -(-1)*1 + coupon = 1 + 5
-    assert jnp.allclose(cashflows[:, 1:-1], 5.0)  # all intermediate coupons
-    assert jnp.allclose(cashflows[:, -1], 4.0)  # coupon (5) + delta_notional (-1) = 4.0
+    # Initial outlay: -1.0 * 1.0 = -1.0
+    assert jnp.allclose(cashflows[:, 0], -1.0)
+    # Coupons in t=1 to t=3: 5.0 each
+    assert jnp.allclose(cashflows[:, 1:-1], 5.0)
+    # Final coupon + notional repayment: 5.0 + 1.0 = 6.0
+    assert jnp.allclose(cashflows[:, -1], 6.0)
 
 
 def test_run_simulations_for_company_output():
