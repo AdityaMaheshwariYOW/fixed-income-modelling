@@ -73,6 +73,53 @@ def compute_grouped_npv(df, group_col, cashflow_col, time_col, rates):
     
     return pd.DataFrame(results)
 
+def evaluate_npv_and_gradients(cf: jnp.ndarray, t: jnp.ndarray, rates: list[float]) -> pd.DataFrame:
+    """
+    Compute the Net Present Value (NPV) and its gradient with respect to the discount rate
+    for a given stream of cashflows at specified times.
+
+    This is useful for assessing the sensitivity of NPV to changes in the discount rate—
+    for example, for understanding duration in bond analytics.
+
+    Parameters
+    ----------
+    cf : jnp.ndarray
+        Array of cashflows. Should be 1D and correspond to the same length as `t`.
+    t : jnp.ndarray
+        Array of time indices (e.g., in years, quarters, etc.) corresponding to each cashflow.
+    rates : list of float
+        List of discount rates at which to evaluate the NPV and its derivative.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame with columns:
+        - 'rate': The discount rate
+        - 'npv': Net Present Value at that rate
+        - 'd_npv_dr': Derivative of NPV with respect to rate (i.e., sensitivity/duration proxy)
+
+    Example
+    -------
+    >>> cf = jnp.array([-1000, 400, 400, 400])
+    >>> t = jnp.array([0, 1, 2, 3])
+    >>> rates = [0.00, 0.05, 0.10]
+    >>> evaluate_npv_and_gradients(cf, t, rates)
+    """
+    npv_fn = lambda r: NPV(r, cf, t)
+    npv_grad = grad(npv_fn)
+
+    results = []
+    for r in rates:
+        npv_val = npv_fn(r)
+        grad_val = npv_grad(r)
+        results.append({
+            "rate": r,
+            "npv": float(npv_val),
+            "d_npv_dr": float(grad_val)
+        })
+
+    return pd.DataFrame(results)
+
 def irr_newton(cf: jnp.ndarray, t: jnp.ndarray, r_init: float = 0.05, max_iter: int = 50) -> jnp.ndarray:
     """
     Compute the internal rate of return (IRR) using the Newton-Raphson method.
@@ -185,3 +232,50 @@ def compute_no_default_irr(cf: jnp.ndarray, times: jnp.ndarray, p0: float) -> fl
     full_cf = cf.at[0].set(-p0)
     return irr_newton(full_cf, times)
 
+def compute_irr_from_dataframe(
+    df: pd.DataFrame,
+    combine: bool = False,
+    change_price: bool = False,
+    new_price: float = 1.0
+) -> Union[jnp.ndarray, Tuple[jnp.ndarray, pd.DataFrame]]:
+    """
+    Compute IRR(s) from a DataFrame containing cashflows and times.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain 'company', 'total_cf', and 'time' columns.
+    combine : bool, optional
+        If True, combines all cashflows across companies and returns a single IRR.
+        If False, returns IRR for each company separately.
+    change_price : bool, optional
+        If True, overrides the price at time 0 with new_price.
+    new_price : float, optional
+        The new price to use at time 0 (only used if change_price is True).
+
+    Returns
+    -------
+    Union[jnp.ndarray, Tuple[jnp.ndarray, pd.DataFrame]]
+        If combine=True: returns a single IRR.
+        If combine=False: returns a list of IRRs and the modified DataFrame.
+    """
+    df = df.copy()
+
+    if change_price:
+        t0 = df['time'].min()
+        mask = df['time'] == t0
+        df.loc[mask, 'total_cf'] = df.loc[mask, 'delta_notional'] * new_price + df.loc[mask, 'coupon']
+
+    if combine:
+        cf = jnp.array(df['total_cf'].values)
+        t = jnp.array(df['time'].values)
+        irr = irr_newton(cf, t)
+        return irr, df if change_price else irr
+
+    else:
+        irr_by_group = {}
+        for name, subdf in df.groupby('company'):
+            cf = jnp.array(subdf['total_cf'].values)
+            t = jnp.array(subdf['time'].values)
+            irr_by_group[name] = irr_newton(cf, t)
+        return irr_by_group, df if change_price else irr_by_group
