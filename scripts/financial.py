@@ -66,10 +66,12 @@ def compute_grouped_npv(df, group_col, cashflow_col, time_col, rates):
         for label, group in group_data:
             times = jnp.array(group[time_col].values)
             cfs = jnp.array(group[cashflow_col].values)
-            npv = jnp.sum(cfs / (1 + rate) ** times)
-            results.append({'group': label, 'rate': rate, 'npv': float(npv)})
+            npv_val = NPV(rate, cfs, times)  # Use continuous compounding
+            results.append({'group': label, 'rate': rate, 'npv': float(npv_val)})
     
     return pd.DataFrame(results)
+
+
 
 def evaluate_npv_and_gradients(cf: jnp.ndarray, t: jnp.ndarray, rates: list[float]) -> pd.DataFrame:
     """
