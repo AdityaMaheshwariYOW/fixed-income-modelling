@@ -323,36 +323,80 @@ def compute_irr_from_dataframe(
     return (irr_by_company, df) if change_price else irr_by_company
 
 
-def expected_irr_given_price(sim_results: dict, p0: float) -> float:
+def solve_p0(
+    target_R: float,
+    lo: float = 0.3,
+    hi: float = 2.0,
+    tol: float = 1e-4,
+    max_iter: int = 40
+) -> float:
     """
-    Estimate the expected IRR across all simulations and companies, given an entry price.
+    Find the price-per-unit-notional p₀ that makes the simulated average IRR hit a target.
 
-    Parameters
-    ----------
-    sim_results : dict
-        Dictionary with simulated results, each containing a 'cf_mat' (jax array of shape
-        (n_simulations, n_periods)).
-    p0 : float
-        Price to use for time-zero investment (overwriting initial cashflow at t=0).
+    Uses a bisection algorithm over [lo, hi] to solve
 
-    Returns
-    -------
-    float
-        Mean IRR across all simulation paths.
+        avg_irr_for_price(p₀) == target_R
+
+    where `avg_irr_for_price(p)` (defined elsewhere):
+      1. Rescales the t=0 outlay of your pre-built `portfolio_cf_template`
+      2. Runs your batched IRR solver (`irr_simulated_batch`)
+      3. Returns the mean continuous‐compounding IRR across all simulation paths.
+
+    Args:
+        target_R (float):
+            Desired continuous-compounding IRR (e.g. 0.0755 for 7.55%).
+        lo (float, optional):
+            Lower bound of the price search interval. Must satisfy
+            avg_irr_for_price(lo) > target_R (or < target_R) opposite to `hi`.
+            Defaults to 0.3.
+        hi (float, optional):
+            Upper bound of the price search interval. Must bracket the root
+            opposite to `lo`. Defaults to 2.0.
+        tol (float, optional):
+            Convergence tolerance on the IRR difference:
+            |avg_irr_for_price(mid) - target_R| < tol stops the search.
+            Defaults to 1e-4.
+        max_iter (int, optional):
+            Maximum number of bisection steps before giving up.
+            Defaults to 40.
+
+    Returns:
+        float: The entry price p₀ (per unit notional) that equalizes
+               the simulated average IRR with `target_R`, within `tol`.
+
+    Raises:
+        ValueError: If the function values at `lo` and `hi` do not bracket
+                    `target_R` (i.e. both above or both below), suggesting you
+                    need to widen the search interval.
+
+    Example:
+        ```python
+        # Suppose 7.55% is your no-default continuous IRR.
+        TARGET_R = 0.0755
+
+        # Ensure avg_irr_for_price(0.5) > TARGET_R > avg_irr_for_price(1.5)
+        p_star = solve_p0(TARGET_R, lo=0.5, hi=1.5, tol=1e-5)
+        print(f"Required entry price: {p_star:.4f}")
+        ```
     """
-    cf_list = []
-    for v in sim_results.values():
-        cf_mat = v['cf_mat']                     # shape (n_sims, n_periods)
-        cf_adj = cf_mat.at[:, 0].set(-p0)        # overwrite t=0 cashflow
-        cf_list.append(cf_adj)
+    f_lo = avg_irr_for_price(lo) - target_R
+    f_hi = avg_irr_for_price(hi) - target_R
 
-    # Stack across companies → shape (n_companies, n_sims, n_periods)
-    stacked = jnp.stack(cf_list, axis=0)
-    # Sum over companies → shape (n_sims, n_periods)
-    total_cf = jnp.sum(stacked, axis=0)
+    if f_lo * f_hi > 0:
+        raise ValueError(
+            f"Root not bracketed: f(lo)={f_lo:+.4f}, f(hi)={f_hi:+.4f}. "
+            "Please choose a wider [lo, hi]."
+        )
 
-    # Compute IRR per simulation and average
-    irr_array = irr_simulated_batch(total_cf)
-    irr_array = np.array(irr_array)
-    irr_array = irr_array[~np.isnan(irr_array)]
-    return float(np.mean(irr_array))
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        f_mid = avg_irr_for_price(mid) - target_R
+        if abs(f_mid) < tol:
+            return mid
+        if f_lo * f_mid < 0:
+            hi, f_hi = mid, f_mid
+        else:
+            lo, f_lo = mid, f_mid
+
+    # If convergence isn’t reached within max_iter, return the midpoint
+    return 0.5 * (lo + hi)
