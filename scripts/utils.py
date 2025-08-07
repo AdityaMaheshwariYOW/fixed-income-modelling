@@ -3,6 +3,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from typing import List
 
+# ---------------------------------------
+# Reading, Parsing and Plotting Utilities
+# ---------------------------------------
 
 def read_and_parse_dates(path: str, date_col: str = 'date') -> pd.DataFrame:
     """
