@@ -140,3 +140,4 @@ def plot_grouped_time_series(df: pd.DataFrame, group_col: str, time_col: str,
 
     plt.tight_layout()
     plt.show()
+
