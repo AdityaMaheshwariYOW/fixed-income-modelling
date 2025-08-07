@@ -169,8 +169,8 @@ def irr_newton(
             f = NPV_simple(r, cf, t)
             df = jax.grad(NPV_simple)(r, cf, t)
         else:
-            f = NPV_cont(r, cf, t)
-            df = jax.grad(NPV_cont)(r, cf, t)
+            f = NPV(r, cf, t)
+            df = jax.grad(NPV)(r, cf, t)
         r_new = r - f / df
         return r_new, r
 
@@ -265,17 +265,21 @@ def compute_irr_from_dataframe(
     combine: bool = False,
     change_price: bool = False,
     new_price: float = 1.0
-) -> Union[jnp.ndarray, Tuple[jnp.ndarray, pd.DataFrame]]:
+) -> Union[
+    Tuple[float, float],
+    Tuple[Tuple[float, float], pd.DataFrame],
+    Dict[str, Tuple[float, float]],
+    Tuple[Dict[str, Tuple[float, float]], pd.DataFrame]
+]:
     """
-    Compute IRR(s) from a DataFrame containing cashflows and times.
+    Compute both discrete (simple) and continuous IRR(s) from a DataFrame containing cashflows and times.
 
     Parameters
     ----------
     df : pd.DataFrame
         Must contain 'company', 'total_cf', and 'time' columns.
     combine : bool, optional
-        If True, combines all cashflows across companies and returns a single IRR.
-        If False, returns IRR for each company separately.
+        If True, combines all cashflows across companies and returns a single IRR pair.
     change_price : bool, optional
         If True, overrides the price at time 0 with new_price.
     new_price : float, optional
@@ -283,30 +287,41 @@ def compute_irr_from_dataframe(
 
     Returns
     -------
-    Union[jnp.ndarray, Tuple[jnp.ndarray, pd.DataFrame]]
-        If combine=True: returns a single IRR.
-        If combine=False: returns a list of IRRs and the modified DataFrame.
+    Union[
+        (R_simple, r_cont),
+        ((R_simple, r_cont), df),
+        {company: (R_simple, r_cont)},
+        ({company: (R_simple, r_cont)}, df)
+    ]
+        Simple and continuous IRRs, and optionally the modified DataFrame.
     """
     df = df.copy()
 
+    # Apply price override if requested
     if change_price:
         t0 = df['time'].min()
         mask = df['time'] == t0
         df.loc[mask, 'total_cf'] = df.loc[mask, 'delta_notional'] * new_price + df.loc[mask, 'coupon']
 
+    def calc_both(cf_arr, t_arr):
+        R = irr_newton(cf_arr, t_arr, compounding='simple')
+        r = irr_newton(cf_arr, t_arr, compounding='continuous')
+        return (R, r)
+
     if combine:
         cf = jnp.array(df['total_cf'].values)
         t = jnp.array(df['time'].values)
-        irr = irr_newton(cf, t)
-        return irr, df if change_price else irr
+        irr_pair = calc_both(cf, t)
+        return (irr_pair, df) if change_price else irr_pair
 
-    else:
-        irr_by_group = {}
-        for name, subdf in df.groupby('company'):
-            cf = jnp.array(subdf['total_cf'].values)
-            t = jnp.array(subdf['time'].values)
-            irr_by_group[name] = irr_newton(cf, t)
-        return irr_by_group, df if change_price else irr_by_group
+    irr_by_company: Dict[str, Tuple[float, float]] = {}
+    for name, subdf in df.groupby('company'):
+        cf = jnp.array(subdf['total_cf'].values)
+        t = jnp.array(subdf['time'].values)
+        irr_by_company[name] = calc_both(cf, t)
+
+    return (irr_by_company, df) if change_price else irr_by_company
+
 
 def expected_irr_given_price(sim_results: dict, p0: float) -> float:
     """
