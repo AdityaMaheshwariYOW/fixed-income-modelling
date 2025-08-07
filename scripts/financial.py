@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import jax
 import jax.numpy as jnp
 from jax import lax, grad
-from typing import Union, Tuple, List
+from typing import Union, Tuple, List, Dict
 
 # -------------------------
 # Core Financial Functions
