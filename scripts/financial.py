@@ -32,6 +32,19 @@ def NPV(r: float, cf: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
     t_ = jnp.where(jnp.isnan(t), 0, t)
     return jnp.sum(cf_ * jnp.exp(-r * t_))
 
+import jax
+import jax.numpy as jnp
+from jax import lax
+
+
+def NPV_simple(r: float, cf: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+    """
+    Discrete compounding NPV: sum(cf_i / (1+r)**t_i)
+    """
+    cf_ = jnp.where(jnp.isnan(cf), 0, cf)
+    t_ = jnp.where(jnp.isnan(t), 0, t)
+    return jnp.sum(cf_ / (1 + r) ** t_)
+
 
 def compute_grouped_npv(df, group_col, cashflow_col, time_col, rates):
     """
@@ -70,8 +83,6 @@ def compute_grouped_npv(df, group_col, cashflow_col, time_col, rates):
             results.append({'group': label, 'rate': rate, 'npv': float(npv_val)})
     
     return pd.DataFrame(results)
-
-
 
 def evaluate_npv_and_gradients(cf: jnp.ndarray, t: jnp.ndarray, rates: list[float]) -> pd.DataFrame:
     """
@@ -120,34 +131,52 @@ def evaluate_npv_and_gradients(cf: jnp.ndarray, t: jnp.ndarray, rates: list[floa
 
     return pd.DataFrame(results)
 
-def irr_newton(cf: jnp.ndarray, t: jnp.ndarray, r_init: float = 0.05, max_iter: int = 50) -> jnp.ndarray:
+def irr_newton(
+    cf: jnp.ndarray,
+    t: jnp.ndarray,
+    r_init: float = 0.05,
+    max_iter: int = 50,
+    compounding: str = 'continuous'
+) -> float:
     """
-    Compute the internal rate of return (IRR) using the Newton-Raphson method.
+    Compute the internal rate of return (IRR) using Newton-Raphson.
 
     Parameters
     ----------
     cf : jnp.ndarray
         Cashflow amounts.
     t : jnp.ndarray
-        Time points corresponding to each cashflow (in years).
+        Time points corresponding to each cashflow.
     r_init : float, optional
-        Initial guess for the IRR (default is 0.05).
+        Initial guess for the IRR (default 0.05).
     max_iter : int, optional
-        Maximum number of iterations (default is 50).
+        Max Newton-Raphson iterations (default 50).
+    compounding : {'simple', 'continuous'}
+        'simple' for discrete compounding (R),
+        'continuous' for continuously compounded rate (r).
 
     Returns
     -------
-    jnp.ndarray
-        Estimated IRR using continuous compounding.
+    float
+        Estimated IRR (simple R or continuous r).
     """
+    # Validate compounding
+    if compounding not in ('simple', 'continuous'):
+        raise ValueError("compounding must be 'simple' or 'continuous'")
+
     def body_fn(r, _):
-        f = NPV(r, cf, t)
-        df = jax.grad(NPV)(r, cf, t)
+        if compounding == 'simple':
+            f = NPV_simple(r, cf, t)
+            df = jax.grad(NPV_simple)(r, cf, t)
+        else:
+            f = NPV_cont(r, cf, t)
+            df = jax.grad(NPV_cont)(r, cf, t)
         r_new = r - f / df
         return r_new, r
 
+    # Run Newton-Raphson via lax.scan
     r_final, _ = lax.scan(body_fn, r_init, None, length=max_iter)
-    return r_final
+    return float(r_final)  # return Python float
 
 def irr_simulated_batch(cashflow_matrix: jnp.ndarray) -> jnp.ndarray:
     """
@@ -209,7 +238,6 @@ def expected_irr_given_price(sim_results: dict, p0: float) -> float:
 
     all_cf = jnp.sum(jnp.stack(cf_list), axis=0)  # sum over companies
     return float(jnp.mean(irr_simulated_batch(all_cf)))
-
 
 def compute_no_default_irr(cf: jnp.ndarray, times: jnp.ndarray, p0: float) -> float:
     """
@@ -280,7 +308,6 @@ def compute_irr_from_dataframe(
             irr_by_group[name] = irr_newton(cf, t)
         return irr_by_group, df if change_price else irr_by_group
 
-# --- Step 2: Define expected IRR from simulations for a given entry price p0 ---
 def expected_irr_given_price(sim_results: dict, p0: float) -> float:
     """
     Estimate the expected IRR across all simulations and companies, given an entry price.
