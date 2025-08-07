@@ -176,7 +176,7 @@ def irr_newton(
 
     # Run Newton-Raphson via lax.scan
     r_final, _ = lax.scan(body_fn, r_init, None, length=max_iter)
-    return float(r_final)  # return Python float
+    return r_final  # return Python float
 
 def irr_simulated_batch(cashflow_matrix: jnp.ndarray) -> jnp.ndarray:
     """
