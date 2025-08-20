@@ -629,3 +629,413 @@ def expected_irr_table(
     df = pd.DataFrame(rows)
     df["Price"] = pd.Categorical(df["Price"], categories=sorted(price_list), ordered=True)
     return df
+
+def _expand_bracket_for_price(
+    company: str,
+    companies_dict: Dict[str, Dict[str, float]],
+    target_pct: float,
+    compounding: str,
+    p_lo_init: float,
+    p_hi_init: float,
+    *,
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    delay_quarters: int,
+    recovery_lag_years: float,
+    r_init: float,
+    max_expansions: int = 12
+) -> Tuple[float, float]:
+    """
+    Expand [p_lo, p_hi] until f(p_lo)*f(p_hi) <= 0 or expansions exhausted.
+    f(P) = E[IRR](P) - target_pct
+    """
+    p_lo, p_hi = p_lo_init, p_hi_init
+    f_lo = expected_irr(company, companies_dict, p_lo,
+                        maturity_years=maturity_years, compounding=compounding,
+                        par=par, per_year=per_year,
+                        delay_quarters=delay_quarters,
+                        recovery_lag_years=recovery_lag_years,
+                        r_init=r_init) - target_pct
+
+    f_hi = expected_irr(company, companies_dict, p_hi,
+                        maturity_years=maturity_years, compounding=compounding,
+                        par=par, per_year=per_year,
+                        delay_quarters=delay_quarters,
+                        recovery_lag_years=recovery_lag_years,
+                        r_init=r_init) - target_pct
+
+    expansions = 0
+    while not (np.isfinite(f_lo) and np.isfinite(f_hi) and f_lo * f_hi <= 0) and expansions < max_expansions:
+        p_lo = max(1.0, p_lo * 0.8)   # sanity guard: price ≥ $1
+        p_hi = p_hi * 1.25
+
+        f_lo = expected_irr(company, companies_dict, p_lo,
+                            maturity_years=maturity_years, compounding=compounding,
+                            par=par, per_year=per_year,
+                            delay_quarters=delay_quarters,
+                            recovery_lag_years=recovery_lag_years,
+                            r_init=r_init) - target_pct
+
+        f_hi = expected_irr(company, companies_dict, p_hi,
+                            maturity_years=maturity_years, compounding=compounding,
+                            par=par, per_year=per_year,
+                            delay_quarters=delay_quarters,
+                            recovery_lag_years=recovery_lag_years,
+                            r_init=r_init) - target_pct
+
+        expansions += 1
+
+    return p_lo, p_hi
+
+
+def price_for_target_expected_irr(
+    company: str,
+    companies_dict: Dict[str, Dict[str, float]],
+    *,
+    target_pct: float = 10.0,
+    compounding: str = "simple",
+    p_lo: float = 60.0,
+    p_hi: float = 120.0,
+    tol: float = 1e-4,
+    max_iter: int = 100,
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    delay_quarters: int,
+    recovery_lag_years: float,
+    r_init: float
+) -> float:
+    """
+    Solve for the price (OID, % of par) that gives expected IRR == target_pct.
+    Uses bisection with automatic bracketing expansion.
+    """
+    # Expand bracket first
+    p_lo, p_hi = _expand_bracket_for_price(
+        company, companies_dict, target_pct, compounding,
+        p_lo, p_hi,
+        par=par, maturity_years=maturity_years,
+        per_year=per_year, delay_quarters=delay_quarters,
+        recovery_lag_years=recovery_lag_years, r_init=r_init
+    )
+
+    f_lo = expected_irr(company, companies_dict, p_lo,
+                        maturity_years=maturity_years, compounding=compounding,
+                        par=par, per_year=per_year,
+                        delay_quarters=delay_quarters,
+                        recovery_lag_years=recovery_lag_years,
+                        r_init=r_init) - target_pct
+
+    f_hi = expected_irr(company, companies_dict, p_hi,
+                        maturity_years=maturity_years, compounding=compounding,
+                        par=par, per_year=per_year,
+                        delay_quarters=delay_quarters,
+                        recovery_lag_years=recovery_lag_years,
+                        r_init=r_init) - target_pct
+
+    # If we still don't have a valid bracket, fallback to closest endpoint
+    if not (np.isfinite(f_lo) and np.isfinite(f_hi) and f_lo * f_hi <= 0):
+        v_lo = expected_irr(company, companies_dict, p_lo,
+                            maturity_years=maturity_years, compounding=compounding,
+                            par=par, per_year=per_year,
+                            delay_quarters=delay_quarters,
+                            recovery_lag_years=recovery_lag_years,
+                            r_init=r_init)
+        v_hi = expected_irr(company, companies_dict, p_hi,
+                            maturity_years=maturity_years, compounding=compounding,
+                            par=par, per_year=per_year,
+                            delay_quarters=delay_quarters,
+                            recovery_lag_years=recovery_lag_years,
+                            r_init=r_init)
+        return p_lo if abs(v_lo - target_pct) <= abs(v_hi - target_pct) else p_hi
+
+    # Bisection
+    for _ in range(max_iter):
+        mid = 0.5 * (p_lo + p_hi)
+        f_mid = expected_irr(company, companies_dict, mid,
+                             maturity_years=maturity_years, compounding=compounding,
+                             par=par, per_year=per_year,
+                             delay_quarters=delay_quarters,
+                             recovery_lag_years=recovery_lag_years,
+                             r_init=r_init) - target_pct
+
+        if not np.isfinite(f_mid):
+            mid = np.nextafter(mid, p_hi)
+
+        if abs(f_mid) < tol or (p_hi - p_lo) < tol:
+            return mid
+
+        if f_lo * f_mid <= 0:
+            p_hi, f_hi = mid, f_mid
+        else:
+            p_lo, f_lo = mid, f_mid
+
+    return 0.5 * (p_lo + p_hi)
+
+
+def prices_to_hit_target(
+    companies_dict: Dict[str, Dict[str, float]],
+    *,
+    target_pct: float = 10.0,
+    compounding: str = "simple",
+    p_lo: float = 60.0,
+    p_hi: float = 120.0,
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    delay_quarters: int,
+    recovery_lag_years: float,
+    r_init: float
+) -> pd.DataFrame:
+    rows = []
+    for company in companies_dict.keys():
+        p_star = price_for_target_expected_irr(
+            company=company,
+            companies_dict=companies_dict,
+            target_pct=target_pct,
+            compounding=compounding,
+            p_lo=p_lo,
+            p_hi=p_hi,
+            par=par,
+            maturity_years=maturity_years,
+            per_year=per_year,
+            delay_quarters=delay_quarters,
+            recovery_lag_years=recovery_lag_years,
+            r_init=r_init
+        )
+        rows.append({"Company": company, "Target IRR (%)": target_pct, "Price* (OID % of par)": p_star})
+    return pd.DataFrame(rows)
+
+# ---------- Core: scenario IRRs with optional time-rebasing (no globals) ----------
+def irr_series_with_delay(
+    company_name: str,
+    companies_dict: Dict[str, Dict[str, float]],
+    price: float,
+    *,
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    delay_quarters: int,
+    recovery_lag_years: float,
+    compounding: str,
+    r_init: float,
+    measure_from: str = "global"  # "global" (fund clock) or "deployment"
+) -> pd.Series:
+    """
+    Returns a Series of scenario IRRs (in %) for Year 1..maturity_years and No Default.
+    - Uses parameterized build_cashflows_for_company (outlay at delay_quarters on fund clock).
+    - If measure_from='deployment', rebase times so outlay is at t=0 (shorter horizon when buying late).
+    """
+    scen = build_cashflows_for_company(
+        company_name=company_name,
+        companies=companies_dict,
+        price=price,
+        par=par,
+        maturity_years=maturity_years,
+        per_year=per_year,
+        delay_quarters=delay_quarters,
+        recovery_lag_years=recovery_lag_years,
+    )
+
+    order = [f"Year {i}" for i in range(1, maturity_years + 1)] + ["No Default"]
+    out = {}
+
+    if measure_from not in ("global", "deployment"):
+        raise ValueError("measure_from must be 'global' or 'deployment'")
+
+    dt = 1.0 / per_year
+    shift = delay_quarters * dt
+
+    for key in order:
+        cf, t = scen[key]
+        if measure_from == "deployment":
+            # Shift times so the outlay quarter is t=0. Keep t >= 0.
+            t2 = t - shift
+            mask = t2 >= 0
+            cf, t2 = cf[mask], t2[mask]
+            r = safe_irr(cf, t2, compounding=compounding, r_init=r_init)
+        else:
+            r = safe_irr(cf, t, compounding=compounding, r_init=r_init)
+
+        out[key] = 100.0 * r if np.isfinite(r) else np.nan
+
+    return pd.Series(out)
+
+
+# ---------- Expected IRR (strict; no fallbacks; no renormalization) ----------
+def expected_irr_with_delay(
+    company_name: str,
+    companies_dict: Dict[str, Dict[str, float]],
+    price: float,
+    *,
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    delay_quarters: int,
+    recovery_lag_years: float,
+    compounding: str,
+    r_init: float,
+    measure_from: str = "global"
+) -> float:
+    """
+    Probability-weighted expected IRR (%) using annual PD and survival to maturity_years.
+    Strict behavior: if any scenario IRR is NaN, returns NaN (matches your original style).
+    """
+    pd_val = float(companies_dict[company_name]["PD"])
+
+    probs = {f"Year {k}": (1 - pd_val) ** (k - 1) * pd_val for k in range(1, maturity_years + 1)}
+    probs["No Default"] = (1 - pd_val) ** maturity_years
+
+    irr_vals = irr_series_with_delay(
+        company_name=company_name,
+        companies_dict=companies_dict,
+        price=price,
+        par=par,
+        maturity_years=maturity_years,
+        per_year=per_year,
+        delay_quarters=delay_quarters,
+        recovery_lag_years=recovery_lag_years,
+        compounding=compounding,
+        r_init=r_init,
+        measure_from=measure_from
+    )
+
+    # strict: if any scenario is NaN, propagate
+    if any(not np.isfinite(irr_vals[k]) for k in probs.keys()):
+        return np.nan
+
+    return float(sum(probs[k] * irr_vals[k] for k in probs.keys()))
+
+
+# ---------- Single price solver for target expected IRR (no globals) ----------
+def price_for_target_expected_irr(
+    company_name: str,
+    companies_dict: Dict[str, Dict[str, float]],
+    *,
+    target_pct: float = 10.0,
+    delay_quarters: int,
+    compounding: str,
+    measure_from: str,
+    p_lo: float,
+    p_hi: float,
+    tol: float,
+    max_iter: int,
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    recovery_lag_years: float,
+    r_init: float
+) -> float:
+    """
+    Solve E[IRR](price) = target_pct using strict expected IRR.
+    Works for any delay and either clock convention (global/deployment).
+    """
+    def f(price):
+        val = expected_irr_with_delay(
+            company_name, companies_dict, price,
+            par=par, maturity_years=maturity_years, per_year=per_year,
+            delay_quarters=delay_quarters, recovery_lag_years=recovery_lag_years,
+            compounding=compounding, r_init=r_init, measure_from=measure_from
+        )
+        return val - target_pct
+
+    v_lo, v_hi = f(p_lo), f(p_hi)
+    expand = 0
+    while (not np.isfinite(v_lo) or not np.isfinite(v_hi) or v_lo * v_hi > 0) and expand < 10:
+        p_lo = max(1.0, p_lo * 0.9)
+        p_hi = p_hi * 1.2
+        v_lo, v_hi = f(p_lo), f(p_hi)
+        expand += 1
+
+    if not (np.isfinite(v_lo) and np.isfinite(v_hi) and v_lo * v_hi <= 0):
+        candidates = [(p_lo, v_lo), (p_hi, v_hi)]
+        candidates = [(p, v) for p, v in candidates if np.isfinite(v)]
+        return min(candidates, key=lambda x: abs(x[1]))[0] if candidates else np.nan
+
+    for _ in range(max_iter):
+        mid = 0.5 * (p_lo + p_hi)
+        v_mid = f(mid)
+        if not np.isfinite(v_mid):
+            mid = np.nextafter(mid, p_hi)
+            v_mid = f(mid)
+        if abs(v_mid) < tol or abs(p_hi - p_lo) < tol:
+            return mid
+        if v_lo * v_mid <= 0:
+            p_hi, v_hi = mid, v_mid
+        else:
+            p_lo, v_lo = mid, v_mid
+    return 0.5 * (p_lo + p_hi)
+
+
+# ---------- Wrapper(s) ----------
+def target_prices_10pct_for_delay(
+    companies_dict: Dict[str, Dict[str, float]],
+    *,
+    delay_quarters: int,
+    compounding: str,
+    measure_from: str,
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    recovery_lag_years: float,
+    r_init: float,
+    p_lo: float = 60.0,
+    p_hi: float = 120.0,
+    tol: float = 1e-4,
+    max_iter: int = 80
+) -> pd.DataFrame:
+    rows = []
+    for company in companies_dict.keys():
+        p_star = price_for_target_expected_irr(
+            company_name=company,
+            companies_dict=companies_dict,
+            target_pct=10.0,
+            delay_quarters=delay_quarters,
+            compounding=compounding,
+            measure_from=measure_from,
+            p_lo=p_lo, p_hi=p_hi, tol=tol, max_iter=max_iter,
+            par=par, maturity_years=maturity_years, per_year=per_year,
+            recovery_lag_years=recovery_lag_years, r_init=r_init
+        )
+        rows.append({"Company": company, f"Price* @10% (q={delay_quarters})": p_star})
+    return pd.DataFrame(rows).sort_values("Company")
+
+
+def target_prices_10pct_all_delays(
+    companies_dict: Dict[str, Dict[str, float]],
+    *,
+    delays: List[int],
+    compounding: str,
+    measure_from: str,
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    recovery_lag_years: float,
+    r_init: float,
+    p_lo: float = 60.0,
+    p_hi: float = 120.0,
+    tol: float = 1e-4,
+    max_iter: int = 80
+) -> pd.DataFrame:
+    """
+    Returns one wide table with columns: Company, q=0, q=1, q=2, ...
+    """
+    base = pd.DataFrame({"Company": list(companies_dict.keys())}).sort_values("Company")
+    for dq in delays:
+        df_dq = target_prices_10pct_for_delay(
+            companies_dict,
+            delay_quarters=dq,
+            compounding=compounding,
+            measure_from=measure_from,
+            par=par,
+            maturity_years=maturity_years,
+            per_year=per_year,
+            recovery_lag_years=recovery_lag_years,
+            r_init=r_init,
+            p_lo=p_lo,
+            p_hi=p_hi,
+            tol=tol,
+            max_iter=max_iter
+        )
+        base = base.merge(df_dq, on="Company", how="left")
+    return base
