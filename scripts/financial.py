@@ -558,3 +558,74 @@ def irr_long_dataframe(
     df["YearPlot"] = pd.Categorical(df["YearPlot"], categories=cat_order, ordered=True)
     return df
 
+def expected_irr(
+    company_name: str,
+    companies: Dict[str, Dict[str, float]],
+    price: float,
+    *,
+    maturity_years: int,
+    compounding: str,
+    # args needed by irr_series_for_company:
+    par: float,
+    per_year: int,
+    delay_quarters: int,
+    recovery_lag_years: float,
+    r_init: float
+) -> float:
+    """
+    Expected IRR (% per year) for one company at a given price.
+    Uses yearly_default_probs + survival; matches scenario labels used by irr_series_for_company.
+    """
+    pd_val = float(companies[company_name]["PD"])
+    year_probs = yearly_default_probs(pd_val, years=maturity_years)      # [p1..pN]
+    labels = [f"Year {i}" for i in range(1, maturity_years + 1)] + ["No Default"]
+    probs = {f"Year {i+1}": p for i, p in enumerate(year_probs)}
+    probs["No Default"] = (1 - pd_val) ** maturity_years
+
+    irr_vals = irr_series_for_company(
+        company_name=company_name,
+        companies=companies,
+        price=price,
+        par=par,
+        maturity_years=maturity_years,
+        per_year=per_year,
+        delay_quarters=delay_quarters,
+        recovery_lag_years=recovery_lag_years,
+        compounding=compounding,
+        r_init=r_init
+    )  # returns % by scenario
+
+    return float(sum(probs[lbl] * irr_vals[lbl] for lbl in labels))
+
+
+def expected_irr_table(
+    companies_dict: Dict[str, Dict[str, float]],
+    price_list: List[float],
+    *,
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    delay_quarters: int,
+    recovery_lag_years: float,
+    compounding: str,
+    r_init: float
+) -> pd.DataFrame:
+    rows = []
+    for company in companies_dict.keys():
+        for p in price_list:
+            val = expected_irr(
+                company_name=company,
+                companies=companies_dict,
+                price=p,
+                maturity_years=maturity_years,
+                compounding=compounding,
+                par=par,
+                per_year=per_year,
+                delay_quarters=delay_quarters,
+                recovery_lag_years=recovery_lag_years,
+                r_init=r_init
+            )
+            rows.append({"Company": company, "Price": float(p), "Expected IRR (%)": float(val)})
+    df = pd.DataFrame(rows)
+    df["Price"] = pd.Categorical(df["Price"], categories=sorted(price_list), ordered=True)
+    return df
