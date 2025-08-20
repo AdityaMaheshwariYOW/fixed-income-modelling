@@ -95,24 +95,6 @@ def check_cashflow_consistency(df: pd.DataFrame,
         print(mismatches[['company', 'date', coupon_col, delta_col, price_col, cf_col, 'calculated_cf']])
 
 
-def yearly_default_probs(pd: float, years: int = 4) -> List[float]:
-    """
-    Return [p(default in Year 1), ..., p(default in Year N)] under an i.i.d. annual PD.
-    No globals required.
-
-    Args:
-        pd: annual probability of default (e.g., 0.02 for 2%)
-        years: number of years in the horizon
-
-    Returns:
-        List of length `years` with year-by-year default probabilities.
-    """
-    if years <= 0:
-        return []
-    if not (0.0 <= pd <= 1.0):
-        raise ValueError("pd must be in [0, 1].")
-    return [(1.0 - pd) ** (k - 1) * pd for k in range(1, years + 1)]
-
 def formatted_survival_row(pd: float, years: int = 4) -> List[str]:
     """
     Pretty strings: '<default_k>% (<survival_after_k>%)' for k=1..years.

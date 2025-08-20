@@ -322,6 +322,24 @@ def compute_irr_from_dataframe(
 
     return (irr_by_company, df) if change_price else irr_by_company
 
+def yearly_default_probs(pd: float, years: int = 4) -> List[float]:
+    """
+    Return [p(default in Year 1), ..., p(default in Year N)] under an i.i.d. annual PD.
+    No globals required.
+
+    Args:
+        pd: annual probability of default (e.g., 0.02 for 2%)
+        years: number of years in the horizon
+
+    Returns:
+        List of length `years` with year-by-year default probabilities.
+    """
+    if years <= 0:
+        return []
+    if not (0.0 <= pd <= 1.0):
+        raise ValueError("pd must be in [0, 1].")
+    return [(1.0 - pd) ** (k - 1) * pd for k in range(1, years + 1)]
+
 
 def build_cashflows_for_company(
     company_name: str,
