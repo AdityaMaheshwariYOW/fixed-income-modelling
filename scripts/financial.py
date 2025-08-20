@@ -322,39 +322,239 @@ def compute_irr_from_dataframe(
 
     return (irr_by_company, df) if change_price else irr_by_company
 
-def yearly_default_probs(pd: float, years: int = 4) -> List[float]:
-    """
-    Return [p(default in Year 1), ..., p(default in Year N)] under an i.i.d. annual PD.
-    No globals required.
 
-    Args:
-        pd: annual probability of default (e.g., 0.02 for 2%)
-        years: number of years in the horizon
-
-    Returns:
-        List of length `years` with year-by-year default probabilities.
+def build_cashflows_for_company(
+    company_name: str,
+    companies: Dict[str, Dict[str, float]],
+    price: float,
+    *,
+    par: float = 100.0,
+    maturity_years: int = 4,
+    per_year: int = 4,
+    delay_quarters: int = 0,
+    recovery_lag_years: float = 0.5,
+) -> Dict[str, Tuple[jnp.ndarray, jnp.ndarray]]:
     """
-    if years <= 0:
-        return []
-    if not (0.0 <= pd <= 1.0):
-        raise ValueError("pd must be in [0, 1].")
-    return [(1.0 - pd) ** (k - 1) * pd for k in range(1, years + 1)]
+    Build scenario cashflows for a single company, with optional deployment delay.
 
-def formatted_survival_row(PD: float, years: int = 4) -> List[str]:
-    """
-    Pretty strings: '<default_k>% (<survival_after_k>%)' for k=1..years.
-    Matches your existing printout format.
-    """
-    if years <= 0:
-        return []
-    if not (0.0 <= PD <= 1.0):
-        raise ValueError("PD must be in [0, 1].")
+    Scenarios:
+      - Default at Year 1, 2, 3, 4 (recovery at year + recovery_lag_years from the t=0 clock)
+      - No Default (par repaid at maturity_years)
 
-    out: List[str] = []
-    for k in range(1, years + 1):
-        surv_prev = (1.0 - PD) ** (k - 1)
-        surv_k    = (1.0 - PD) ** k
-        pd_k      = surv_prev * PD
-        out.append(f"{pd_k:.4%} ({surv_k:.2%})")
+    Deployment delay (fund clock):
+      - Initial outlay occurs at t = delay_quarters / per_year
+      - Coupons start the *quarter after* purchase
+      - Default/maturity timings DO NOT shift (they’re anchored to t=0)
+
+    Returns
+    -------
+    dict[str, (cf: jnp.ndarray, t: jnp.ndarray)]
+        Keys: "Year 1", …, "Year N", "No Default".
+        cf and t share the same length and quarterly grid (including recovery points).
+    """
+    if company_name not in companies:
+        raise KeyError(f"company '{company_name}' not found in companies dict")
+
+    if per_year <= 0:
+        raise ValueError("per_year must be > 0")
+    if maturity_years <= 0:
+        raise ValueError("maturity_years must be > 0")
+    if delay_quarters < 0:
+        raise ValueError("delay_quarters must be >= 0")
+    if recovery_lag_years < 0:
+        raise ValueError("recovery_lag_years must be >= 0")
+
+    params   = companies[company_name]
+    cpn_rate = float(params["Coupon"]) / 100.0
+    rr       = float(params["RR"])
+
+    total_periods     = int(maturity_years * per_year)              # coupon/par grid to maturity
+    recovery_periods  = int((maturity_years + recovery_lag_years) * per_year)  # to last recovery
+    dt                = 1.0 / per_year
+    t                 = jnp.arange(0, recovery_periods + 1) * dt    # 0, 1/per_year, ..., maturity+lag
+
+    qtr_coupon        = (cpn_rate * par) / per_year
+    scenarios: Dict[str, Tuple[jnp.ndarray, jnp.ndarray]] = {}
+
+    # --- No Default ---
+    cf_nd = jnp.zeros_like(t)
+    # Outlay at deployment time (fund clock)
+    deploy_idx = min(delay_quarters, recovery_periods)  # guard if delay beyond grid
+    cf_nd = cf_nd.at[deploy_idx].set(-price)
+
+    # Coupons: from the quarter AFTER purchase up to and including the last coupon quarter
+    first_coupon_qtr = delay_quarters + 1
+    if first_coupon_qtr <= total_periods:
+        cf_nd = cf_nd.at[first_coupon_qtr:total_periods + 1].add(qtr_coupon)
+
+    # Par at maturity (unchanged by delay)
+    cf_nd = cf_nd.at[total_periods].add(par)
+    scenarios["No Default"] = (cf_nd, t)
+
+    # --- Default in Year k ---
+    for year in range(1, maturity_years + 1):
+        cf = jnp.zeros_like(t)
+
+        # Outlay at deployment
+        cf = cf.at[deploy_idx].set(-price)
+
+        # Coupons between purchase and the end of default year (inclusive)
+        last_qtr     = year * per_year
+        start_q      = delay_quarters + 1
+        end_q        = min(last_qtr, total_periods)
+        if start_q <= end_q:
+            cf = cf.at[start_q:end_q + 1].add(qtr_coupon)
+
+        # Recovery at k + recovery_lag_years (anchored to t=0)
+        recovery_qtr = int((year + recovery_lag_years) * per_year)
+        recovery_qtr = min(recovery_qtr, recovery_periods)  # guard
+        cf = cf.at[recovery_qtr].add(rr * par)
+
+        scenarios[f"Year {year}"] = (cf, t)
+
+    return scenarios
+
+
+# Safe IRR wrapper: no defaults, no globals
+def safe_irr(
+    cf: jnp.ndarray,
+    t: jnp.ndarray,
+    compounding: str,
+    r_init: float
+) -> float:
+    """
+    Newton IRR with basic sanity checks. Returns np.nan if it fails.
+    Requires explicit compounding ('simple'|'continuous') and r_init.
+    """
+    try:
+        r = float(irr_newton(cf, t, r_init=r_init, compounding=compounding))
+        if not np.isfinite(r) or r <= -0.999:
+            return np.nan
+        return r
+    except Exception:
+        return np.nan
+
+
+# Scenario IRRs (in %) for one company/price with explicit config
+def irr_series_for_company(
+    company_name: str,
+    companies: Dict[str, Dict[str, float]],
+    price: float,
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    delay_quarters: int,
+    recovery_lag_years: float,
+    compounding: str,
+    r_init: float
+) -> pd.Series:
+    """
+    Returns a Series of IRRs (in %) for scenarios: Year 1..maturity_years, No Default.
+    Uses fund clock (deploy at delay_quarters; default/maturity anchored to t=0).
+    """
+    scen = build_cashflows_for_company(
+        company_name=company_name,
+        companies=companies,
+        price=price,
+        par=par,
+        maturity_years=maturity_years,
+        per_year=per_year,
+        delay_quarters=delay_quarters,
+        recovery_lag_years=recovery_lag_years,
+    )
+
+    labels = [f"Year {i}" for i in range(1, maturity_years + 1)] + ["No Default"]
+    out = {}
+    for k in labels:
+        cf, t = scen[k]
+        r = safe_irr(cf, t, compounding=compounding, r_init=r_init)
+        out[k] = 100.0 * r  # percentage
+    return pd.Series(out)
+
+
+# Tables for all companies across a list of prices 
+def irr_tables_all_prices(
+    companies_dict: Dict[str, Dict[str, float]],
+    price_list: List[float],
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    delay_quarters: int,
+    recovery_lag_years: float,
+    compounding: str,
+    r_init: float
+) -> Dict[str, pd.DataFrame]:
+    """
+    For each company: DataFrame indexed by (Year 1..N, No Default), columns = price_list, values = IRR (%).
+    """
+    idx = [f"Year {i}" for i in range(1, maturity_years + 1)] + ["No Default"]
+    out: Dict[str, pd.DataFrame] = {}
+
+    for company in companies_dict.keys():
+        cols = {}
+        for p in price_list:
+            s = irr_series_for_company(
+                company_name=company,
+                companies=companies_dict,
+                price=p,
+                par=par,
+                maturity_years=maturity_years,
+                per_year=per_year,
+                delay_quarters=delay_quarters,
+                recovery_lag_years=recovery_lag_years,
+                compounding=compounding,
+                r_init=r_init
+            )
+            cols[f"{p:.0f}"] = s
+        df = pd.DataFrame(cols).loc[idx]
+        out[company] = df
     return out
+
+
+# Long/tidy DF for plotting (maps 'No Default' to 'Year {maturity_years+1}')
+def irr_long_dataframe(
+    companies_dict: Dict[str, Dict[str, float]],
+    price_list: List[float],
+    par: float,
+    maturity_years: int,
+    per_year: int,
+    delay_quarters: int,
+    recovery_lag_years: float,
+    compounding: str,
+    r_init: float
+) -> pd.DataFrame:
+    """
+    Columns: Company, Price, Year, YearPlot, IRR (%).
+    YearPlot maps 'No Default' -> 'Year {maturity_years+1}' for consistent x-axis spacing.
+    """
+    rows = []
+    nd_label = f"Year {maturity_years + 1}"
+    for company in companies_dict.keys():
+        for p in price_list:
+            s = irr_series_for_company(
+                company_name=company,
+                companies=companies_dict,
+                price=p,
+                par=par,
+                maturity_years=maturity_years,
+                per_year=per_year,
+                delay_quarters=delay_quarters,
+                recovery_lag_years=recovery_lag_years,
+                compounding=compounding,
+                r_init=r_init
+            )
+            for year_label, irr_val in s.items():
+                year_plot = nd_label if year_label == "No Default" else year_label
+                rows.append({
+                    "Company": company,
+                    "Price": f"{p:.0f}",
+                    "Year": year_label,
+                    "YearPlot": year_plot,
+                    "IRR (%)": irr_val
+                })
+
+    df = pd.DataFrame(rows)
+    cat_order = [f"Year {i}" for i in range(1, maturity_years + 2)]  # include mapped No Default
+    df["YearPlot"] = pd.Categorical(df["YearPlot"], categories=cat_order, ordered=True)
+    return df
 
