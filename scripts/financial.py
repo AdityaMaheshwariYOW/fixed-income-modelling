@@ -803,23 +803,27 @@ def prices_to_hit_target(
     per_year: int,
     delay_quarters: int,
     recovery_lag_years: float,
-    r_init: float
+    r_init: float,
+    measure_from: str = "global",   # <-- add this
 ) -> pd.DataFrame:
     rows = []
     for company in companies_dict.keys():
         p_star = price_for_target_expected_irr(
-            company=company,                    # <-- changed from company_name=
+            company_name=company,              # <-- was company=
             companies_dict=companies_dict,
             target_pct=target_pct,
+            delay_quarters=delay_quarters,
             compounding=compounding,
+            measure_from=measure_from,         # <-- pass through
             p_lo=p_lo,
             p_hi=p_hi,
             par=par,
             maturity_years=maturity_years,
             per_year=per_year,
-            delay_quarters=delay_quarters,
             recovery_lag_years=recovery_lag_years,
-            r_init=r_init
+            r_init=r_init,
+            tol=1e-4,
+            max_iter=100,
         )
         rows.append({
             "Company": company,
@@ -827,6 +831,7 @@ def prices_to_hit_target(
             "Price* (OID % of par)": p_star
         })
     return pd.DataFrame(rows)
+
 
 
 # ---------- Core: scenario IRRs with optional time-rebasing (no globals) ----------
@@ -1010,7 +1015,7 @@ def target_prices_10pct_for_delay(
     rows = []
     for company in companies_dict.keys():
         p_star = price_for_target_expected_irr(
-            company=company,   # <-- change here
+            company_name=company,              # <-- was company=
             companies_dict=companies_dict,
             target_pct=10.0,
             delay_quarters=delay_quarters,
@@ -1021,7 +1026,7 @@ def target_prices_10pct_for_delay(
             recovery_lag_years=recovery_lag_years, r_init=r_init
         )
         rows.append({"Company": company, f"Price* @10% (q={delay_quarters})": p_star})
-    return pd.DataFrame(rows).sort_values("Company")
+    return pd.DataFrame(rows).sort_values("Company")    
 
 
 def target_prices_10pct_all_delays(
