@@ -790,7 +790,7 @@ def prices_to_hit_target(
     rows = []
     for company in companies_dict.keys():
         p_star = price_for_target_expected_irr(
-            company=company,
+            company=company,                    # <-- changed from company_name=
             companies_dict=companies_dict,
             target_pct=target_pct,
             compounding=compounding,
@@ -803,8 +803,13 @@ def prices_to_hit_target(
             recovery_lag_years=recovery_lag_years,
             r_init=r_init
         )
-        rows.append({"Company": company, "Target IRR (%)": target_pct, "Price* (OID % of par)": p_star})
+        rows.append({
+            "Company": company,
+            "Target IRR (%)": target_pct,
+            "Price* (OID % of par)": p_star
+        })
     return pd.DataFrame(rows)
+
 
 # ---------- Core: scenario IRRs with optional time-rebasing (no globals) ----------
 def irr_series_with_delay(
@@ -987,7 +992,7 @@ def target_prices_10pct_for_delay(
     rows = []
     for company in companies_dict.keys():
         p_star = price_for_target_expected_irr(
-            company_name=company,
+            company=company,   # <-- change here
             companies_dict=companies_dict,
             target_pct=10.0,
             delay_quarters=delay_quarters,
