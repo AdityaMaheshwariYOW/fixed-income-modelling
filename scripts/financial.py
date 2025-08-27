@@ -32,11 +32,6 @@ def NPV(r: float, cf: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
     t_ = jnp.where(jnp.isnan(t), 0, t)
     return jnp.sum(cf_ * jnp.exp(-r * t_))
 
-import jax
-import jax.numpy as jnp
-from jax import lax
-
-
 def NPV_simple(r: float, cf: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
     """
     Discrete compounding NPV: sum(cf_i / (1+r)**t_i)
@@ -44,7 +39,6 @@ def NPV_simple(r: float, cf: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
     cf_ = jnp.where(jnp.isnan(cf), 0, cf)
     t_ = jnp.where(jnp.isnan(t), 0, t)
     return jnp.sum(cf_ / (1 + r) ** t_)
-
 
 def compute_grouped_npv(df, group_col, cashflow_col, time_col, rates):
     """
@@ -340,7 +334,6 @@ def yearly_default_probs(pd: float, years: int = 4) -> List[float]:
         raise ValueError("pd must be in [0, 1].")
     return [(1.0 - pd) ** (k - 1) * pd for k in range(1, years + 1)]
 
-
 def build_cashflows_for_company(
     company_name: str,
     companies: Dict[str, Dict[str, float]],
@@ -432,8 +425,6 @@ def build_cashflows_for_company(
 
     return scenarios
 
-
-# Safe IRR wrapper: no defaults, no globals
 def safe_irr(
     cf: jnp.ndarray,
     t: jnp.ndarray,
@@ -452,8 +443,6 @@ def safe_irr(
     except Exception:
         return np.nan
 
-
-# Scenario IRRs (in %) for one company/price with explicit config
 def irr_series_for_company(
     company_name: str,
     companies: Dict[str, Dict[str, float]],
@@ -489,8 +478,6 @@ def irr_series_for_company(
         out[k] = 100.0 * r  # percentage
     return pd.Series(out)
 
-
-# Tables for all companies across a list of prices 
 def irr_tables_all_prices(
     companies_dict: Dict[str, Dict[str, float]],
     price_list: List[float],
@@ -528,8 +515,6 @@ def irr_tables_all_prices(
         out[company] = df
     return out
 
-
-# Long/tidy DF for plotting (maps 'No Default' to 'Year {maturity_years+1}')
 def irr_long_dataframe(
     companies_dict: Dict[str, Dict[str, float]],
     price_list: List[float],
@@ -614,7 +599,6 @@ def expected_irr(
     )  # returns % by scenario
 
     return float(sum(probs[lbl] * irr_vals[lbl] for lbl in labels))
-
 
 def expected_irr_table(
     companies_dict: Dict[str, Dict[str, float]],
@@ -706,91 +690,6 @@ def _expand_bracket_for_price(
 
     return p_lo, p_hi
 
-
-def price_for_target_expected_irr(
-    company: str,
-    companies_dict: Dict[str, Dict[str, float]],
-    *,
-    target_pct: float = 10.0,
-    compounding: str = "simple",
-    p_lo: float = 60.0,
-    p_hi: float = 120.0,
-    tol: float = 1e-4,
-    max_iter: int = 100,
-    par: float,
-    maturity_years: int,
-    per_year: int,
-    delay_quarters: int,
-    recovery_lag_years: float,
-    r_init: float
-) -> float:
-    """
-    Solve for the price (OID, % of par) that gives expected IRR == target_pct.
-    Uses bisection with automatic bracketing expansion.
-    """
-    # Expand bracket first
-    p_lo, p_hi = _expand_bracket_for_price(
-        company, companies_dict, target_pct, compounding,
-        p_lo, p_hi,
-        par=par, maturity_years=maturity_years,
-        per_year=per_year, delay_quarters=delay_quarters,
-        recovery_lag_years=recovery_lag_years, r_init=r_init
-    )
-
-    f_lo = expected_irr(company, companies_dict, p_lo,
-                        maturity_years=maturity_years, compounding=compounding,
-                        par=par, per_year=per_year,
-                        delay_quarters=delay_quarters,
-                        recovery_lag_years=recovery_lag_years,
-                        r_init=r_init) - target_pct
-
-    f_hi = expected_irr(company, companies_dict, p_hi,
-                        maturity_years=maturity_years, compounding=compounding,
-                        par=par, per_year=per_year,
-                        delay_quarters=delay_quarters,
-                        recovery_lag_years=recovery_lag_years,
-                        r_init=r_init) - target_pct
-
-    # If we still don't have a valid bracket, fallback to closest endpoint
-    if not (np.isfinite(f_lo) and np.isfinite(f_hi) and f_lo * f_hi <= 0):
-        v_lo = expected_irr(company, companies_dict, p_lo,
-                            maturity_years=maturity_years, compounding=compounding,
-                            par=par, per_year=per_year,
-                            delay_quarters=delay_quarters,
-                            recovery_lag_years=recovery_lag_years,
-                            r_init=r_init)
-        v_hi = expected_irr(company, companies_dict, p_hi,
-                            maturity_years=maturity_years, compounding=compounding,
-                            par=par, per_year=per_year,
-                            delay_quarters=delay_quarters,
-                            recovery_lag_years=recovery_lag_years,
-                            r_init=r_init)
-        return p_lo if abs(v_lo - target_pct) <= abs(v_hi - target_pct) else p_hi
-
-    # Bisection
-    for _ in range(max_iter):
-        mid = 0.5 * (p_lo + p_hi)
-        f_mid = expected_irr(company, companies_dict, mid,
-                             maturity_years=maturity_years, compounding=compounding,
-                             par=par, per_year=per_year,
-                             delay_quarters=delay_quarters,
-                             recovery_lag_years=recovery_lag_years,
-                             r_init=r_init) - target_pct
-
-        if not np.isfinite(f_mid):
-            mid = np.nextafter(mid, p_hi)
-
-        if abs(f_mid) < tol or (p_hi - p_lo) < tol:
-            return mid
-
-        if f_lo * f_mid <= 0:
-            p_hi, f_hi = mid, f_mid
-        else:
-            p_lo, f_lo = mid, f_mid
-
-    return 0.5 * (p_lo + p_hi)
-
-
 def prices_to_hit_target(
     companies_dict: Dict[str, Dict[str, float]],
     *,
@@ -832,9 +731,6 @@ def prices_to_hit_target(
         })
     return pd.DataFrame(rows)
 
-
-
-# ---------- Core: scenario IRRs with optional time-rebasing (no globals) ----------
 def irr_series_with_delay(
     company_name: str,
     companies_dict: Dict[str, Dict[str, float]],
@@ -889,8 +785,6 @@ def irr_series_with_delay(
 
     return pd.Series(out)
 
-
-# ---------- Expected IRR (strict; no fallbacks; no renormalization) ----------
 def expected_irr_with_delay(
     company_name: str,
     companies_dict: Dict[str, Dict[str, float]],
@@ -934,8 +828,6 @@ def expected_irr_with_delay(
 
     return float(sum(probs[k] * irr_vals[k] for k in probs.keys()))
 
-
-# ---------- Single price solver for target expected IRR (no globals) ----------
 def price_for_target_expected_irr(
     company_name: str,
     companies_dict: Dict[str, Dict[str, float]],
@@ -994,8 +886,6 @@ def price_for_target_expected_irr(
             p_lo, v_lo = mid, v_mid
     return 0.5 * (p_lo + p_hi)
 
-
-# ---------- Wrapper(s) ----------
 def target_prices_10pct_for_delay(
     companies_dict: Dict[str, Dict[str, float]],
     *,
@@ -1027,7 +917,6 @@ def target_prices_10pct_for_delay(
         )
         rows.append({"Company": company, f"Price* @10% (q={delay_quarters})": p_star})
     return pd.DataFrame(rows).sort_values("Company")    
-
 
 def target_prices_10pct_all_delays(
     companies_dict: Dict[str, Dict[str, float]],
